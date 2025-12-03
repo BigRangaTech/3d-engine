@@ -10,6 +10,8 @@ pub struct Entity {
     pub acceleration: Vec3,
     pub mesh_path: String,
     pub is_character: bool,
+    pub tag: String,
+    pub layer: i32,
 }
 
 pub struct Scene {

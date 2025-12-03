@@ -89,6 +89,9 @@ struct EditorUiState {
     grid_snap: bool,
     grid_size: f32,
     show_assets_window: bool,
+    filter_tag: String,
+    filter_by_layer: bool,
+    filter_layer: i32,
 }
 
 struct MeshAsset {
@@ -376,6 +379,9 @@ impl<'window> Renderer<'window> {
             grid_snap: false,
             grid_size: 1.0,
             show_assets_window: false,
+            filter_tag: String::new(),
+            filter_by_layer: false,
+            filter_layer: 0,
         };
 
         let mesh_assets = discover_mesh_assets(&egui_ctx, "editor/3D assets");
@@ -553,6 +559,14 @@ impl<'window> Renderer<'window> {
 
                 ui.separator();
                 ui.heading("Entities");
+                ui.horizontal(|ui| {
+                    ui.label("Filter tag");
+                    ui.text_edit_singleline(&mut ui_state.filter_tag);
+                });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut ui_state.filter_by_layer, "Filter layer");
+                    ui.add(egui::DragValue::new(&mut ui_state.filter_layer).speed(1.0));
+                });
 
                 if ui.button("Add entity").clicked() {
                     let index = scene_ref.entities.len();
@@ -564,11 +578,24 @@ impl<'window> Renderer<'window> {
                         acceleration: Vec3::ZERO,
                         mesh_path,
                         is_character: false,
+                        tag: String::new(),
+                        layer: 0,
                     });
                 }
 
                 for (i, entity) in scene_ref.entities.iter().enumerate() {
-                    let label = format!("{} ({})", entity.name, i);
+                    if !ui_state.filter_tag.is_empty()
+                        && !entity.tag.contains(&ui_state.filter_tag)
+                    {
+                        continue;
+                    }
+                    if ui_state.filter_by_layer && entity.layer != ui_state.filter_layer {
+                        continue;
+                    }
+                    let label = format!(
+                        "{} ({}) [tag: {} layer: {}]",
+                        entity.name, i, entity.tag, entity.layer
+                    );
                     let selected = ui_state.selected_entity == Some(i);
                     if ui.selectable_label(selected, label).clicked() {
                         ui_state.selected_entity = Some(i);
@@ -580,6 +607,15 @@ impl<'window> Renderer<'window> {
                         ui.separator();
                         ui.label("Name");
                         ui.text_edit_singleline(&mut entity.name);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Tag");
+                            ui.text_edit_singleline(&mut entity.tag);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Layer");
+                            ui.add(egui::DragValue::new(&mut entity.layer).speed(1.0));
+                        });
 
                         ui.separator();
                         ui.label("Selected entity transform");
@@ -673,6 +709,79 @@ impl<'window> Renderer<'window> {
                     }
                 }
             });
+
+            // Viewport gizmo for moving/rotating the selected entity.
+            if let Some(sel) = ui_state.selected_entity {
+                if let Some(entity) = scene_ref.entities.get_mut(sel) {
+                    let view_proj = scene_ref.camera.view_projection_matrix();
+                    let world_pos = entity.transform.translation;
+                    let pos4 = view_proj
+                        * engine::math::Mat4::from_translation(world_pos)
+                        * engine::math::Vec3::new(0.0, 0.0, 0.0).extend(1.0);
+                    let w = pos4.w;
+                    if w > 0.0 {
+                        let ndc_x = pos4.x / w;
+                        let ndc_y = pos4.y / w;
+                        let screen_x =
+                            (ndc_x * 0.5 + 0.5) * self.config.width as f32;
+                        let screen_y =
+                            (-ndc_y * 0.5 + 0.5) * self.config.height as f32;
+
+                        let screen_pos = egui::pos2(screen_x, screen_y);
+                        egui::Area::new(egui::Id::new("entity_gizmo"))
+                            .order(egui::Order::Foreground)
+                            .fixed_pos(egui::pos2(0.0, 0.0))
+                            .show(ctx, |ui| {
+                                let gizmo_size = egui::vec2(40.0, 40.0);
+                                let rect =
+                                    egui::Rect::from_center_size(screen_pos, gizmo_size);
+                                let id = egui::Id::new("translate_rotate_gizmo");
+                                let response =
+                                    ui.interact(rect, id, egui::Sense::drag());
+                                let painter = ui.painter();
+                                painter.rect_stroke(
+                                    rect,
+                                    0.0,
+                                    egui::Stroke::new(1.0, egui::Color32::YELLOW),
+                                );
+                                painter.line_segment(
+                                    [
+                                        screen_pos - egui::vec2(10.0, 0.0),
+                                        screen_pos + egui::vec2(10.0, 0.0),
+                                    ],
+                                    egui::Stroke::new(1.0, egui::Color32::RED),
+                                );
+                                painter.line_segment(
+                                    [
+                                        screen_pos - egui::vec2(0.0, 10.0),
+                                        screen_pos + egui::vec2(0.0, 10.0),
+                                    ],
+                                    egui::Stroke::new(1.0, egui::Color32::GREEN),
+                                );
+
+                                if response.dragged() {
+                                    let (pointer_delta, modifiers) =
+                                        ui.ctx().input(|i| (i.pointer.delta(), i.modifiers));
+                                    // Hold Shift to rotate around Y; otherwise translate in X/Z.
+                                    if modifiers.shift {
+                                        let angle = -pointer_delta.x as f32 * 0.01;
+                                        let rot =
+                                            Quat::from_rotation_y(angle);
+                                        entity.transform.rotation =
+                                            rot * entity.transform.rotation;
+                                    } else {
+                                        let scale = 0.01;
+                                        entity.transform.translation.x +=
+                                            pointer_delta.x as f32 * scale;
+                                        entity.transform.translation.z -=
+                                            pointer_delta.y as f32 * scale;
+                                    }
+                                }
+                            });
+                    }
+                }
+            }
+
             if ui_state.show_assets_window {
                 egui::Window::new("Assets")
                     .open(&mut ui_state.show_assets_window)
@@ -741,6 +850,8 @@ impl<'window> Renderer<'window> {
                     acceleration: Vec3::ZERO,
                     mesh_path: src.mesh_path.clone(),
                     is_character: src.is_character,
+                    tag: src.tag.clone(),
+                    layer: src.layer,
                 });
                 self.ui_state.selected_entity = Some(scene.entities.len() - 1);
             }
@@ -785,6 +896,9 @@ impl<'window> Renderer<'window> {
         let specular = self.ui_state.specular;
         let shininess = self.ui_state.shininess;
         let default_mesh_path = self.ui_state.glb_path.clone();
+        let filter_tag = self.ui_state.filter_tag.clone();
+        let filter_by_layer = self.ui_state.filter_by_layer;
+        let filter_layer = self.ui_state.filter_layer;
 
         let camera = &scene.camera;
         let view_proj = camera.view_projection_matrix();
@@ -801,6 +915,12 @@ impl<'window> Renderer<'window> {
         {
             let mut keys_to_load: Vec<String> = Vec::new();
             for entity in &scene.entities {
+                if !filter_tag.is_empty() && !entity.tag.contains(&filter_tag) {
+                    continue;
+                }
+                if filter_by_layer && entity.layer != filter_layer {
+                    continue;
+                }
                 let mesh_key = if entity.mesh_path.is_empty() {
                     default_mesh_path.clone()
                 } else {
@@ -909,8 +1029,14 @@ impl<'window> Renderer<'window> {
                 render_pass.draw_indexed(0..self.ground_mesh.num_indices, 0, 0..1);
             }
 
-            // Draw each entity with its mesh.
+            // Draw each entity with its mesh (respecting tag/layer filters).
             for entity in &scene.entities {
+                if !filter_tag.is_empty() && !entity.tag.contains(&filter_tag) {
+                    continue;
+                }
+                if filter_by_layer && entity.layer != filter_layer {
+                    continue;
+                }
                 let mesh_key = if entity.mesh_path.is_empty() {
                     default_mesh_path.clone()
                 } else {
@@ -1020,6 +1146,8 @@ fn main() {
             acceleration: Vec3::ZERO,
             mesh_path: "editor/3D assets/Weapon Pack/Models/GLTF format/pistol.glb".to_string(),
             is_character: false,
+            tag: String::new(),
+            layer: 0,
         }],
         camera,
         gravity: Vec3::new(0.0, -9.81, 0.0),
@@ -1312,11 +1440,7 @@ fn load_mesh_from_any(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
 }
 
 fn load_mesh_from_glb(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
-    use std::fs;
-    use std::path::Path;
-
-    let data = fs::read(Path::new(path)).ok()?;
-    let (document, buffers, _images) = gltf::import_slice(&data).ok()?;
+    let (document, buffers, _images) = gltf::import(path).ok()?;
 
     let mesh = document.meshes().next()?;
     let primitive = mesh.primitives().next()?;

@@ -704,11 +704,7 @@ fn load_mesh_from_any(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
 }
 
 fn load_mesh_from_glb(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
-    use std::fs;
-    use std::path::Path;
-
-    let data = fs::read(Path::new(path)).ok()?;
-    let (document, buffers, _images) = gltf::import_slice(&data).ok()?;
+    let (document, buffers, _images) = gltf::import(path).ok()?;
 
     let mesh = document.meshes().next()?;
     let primitive = mesh.primitives().next()?;
@@ -910,6 +906,8 @@ fn main() {
                 mesh_path: "editor/3D assets/Weapon Pack/Models/GLTF format/pistol.glb"
                     .to_string(),
                 is_character: false,
+                tag: String::new(),
+                layer: 0,
             }],
             camera,
             gravity: Vec3::new(0.0, -9.81, 0.0),

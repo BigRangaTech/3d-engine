@@ -21,6 +21,10 @@ struct SerializableEntity {
     mesh_path: String,
     #[serde(default)]
     is_character: bool,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    layer: Option<i32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -62,6 +66,8 @@ fn scene_to_serializable(scene: &Scene) -> SerializableScene {
             acceleration: Some(e.acceleration.to_array()),
             mesh_path: e.mesh_path.clone(),
             is_character: e.is_character,
+            tag: Some(e.tag.clone()),
+            layer: Some(e.layer),
         })
         .collect();
 
@@ -107,6 +113,8 @@ fn serializable_to_scene(data: &SerializableScene) -> Scene {
                 .unwrap_or(Vec3::ZERO),
             mesh_path: e.mesh_path.clone(),
             is_character: e.is_character,
+            tag: e.tag.clone().unwrap_or_default(),
+            layer: e.layer.unwrap_or(0),
         })
         .collect();
 
