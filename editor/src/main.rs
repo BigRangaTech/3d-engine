@@ -2,11 +2,12 @@ use std::time::Instant;
 use std::collections::HashMap;
 
 use engine::{Engine, Scene};
-use engine::math::{Camera, Vec3, Quat};
+use engine::math::{Camera, Mat4, Vec3, Quat};
 use log::info;
 use serde::Deserialize;
 use gltf;
 use egui::TextureHandle;
+use rayon::ThreadPoolBuilder;
 
 mod assets;
 use assets::{convert_assets_to_glb, discover_mesh_assets};
@@ -92,6 +93,10 @@ struct EditorUiState {
     filter_tag: String,
     filter_by_layer: bool,
     filter_layer: i32,
+    scene_path: String,
+    // Undo/redo.
+    can_undo: bool,
+    can_redo: bool,
 }
 
 struct MeshAsset {
@@ -135,8 +140,14 @@ struct Renderer<'window> {
     egui_renderer: EguiRenderer,
     ui_state: EditorUiState,
     mesh_assets: Vec<MeshAsset>,
+    assets_loaded: bool,
+    undo_stack: Vec<Scene>,
+    redo_stack: Vec<Scene>,
     mesh_cache: HashMap<String, GpuMesh>,
     ground_mesh: GpuMesh,
+    dragging_entity: Option<usize>,
+    drag_plane_y: f32,
+    default_mesh_path: String,
 }
 
 impl<'window> Renderer<'window> {
@@ -263,6 +274,7 @@ impl<'window> Renderer<'window> {
                 @builtin(position) position: vec4<f32>,
                 @location(0) color: vec3<f32>,
                 @location(1) normal: vec3<f32>,
+                @location(2) world_pos: vec3<f32>,
             };
 
             @vertex
@@ -277,6 +289,7 @@ impl<'window> Renderer<'window> {
                 out.position = camera.mvp * vec4(position, 1.0);
                 out.color = color;
                 out.normal = world_normal;
+                out.world_pos = world_pos.xyz;
                 return out;
             }
 
@@ -290,7 +303,20 @@ impl<'window> Renderer<'window> {
                 let fill_dir = normalize(vec3<f32>(1.0, 0.5, 0.25));
                 let fill = max(dot(n, fill_dir), 0.0) * 0.5;
 
-                let base = in.color;
+                var base = in.color;
+                // Checkerboard ground if we're on the ground plane.
+                let ground_color = vec3<f32>(0.3, 0.3, 0.3);
+                if abs(in.world_pos.y) < 0.01 && all(abs(in.color - ground_color) < vec3<f32>(0.001, 0.001, 0.001)) {
+                    let tile_size = 2.0;
+                    let tx = floor(in.world_pos.x / tile_size);
+                    let tz = floor(in.world_pos.z / tile_size);
+                    let sum = tx + tz;
+                    let pattern = sum - 2.0 * floor(sum * 0.5);
+                    let checker = step(1.0, pattern);
+                    let dark = ground_color * 0.6;
+                    let light = ground_color * 1.4;
+                    base = mix(light, dark, checker);
+                }
                 let ambient = camera.ambient_color;
                 let diffuse_color = base * (diffuse + fill);
 
@@ -300,7 +326,16 @@ impl<'window> Renderer<'window> {
                 let spec_angle = max(dot(view_dir, reflect_dir), 0.0);
                 let specular = pow(spec_angle, camera.shininess) * camera.specular_color;
 
-                let lit = ambient + diffuse_color + specular;
+                var lit = ambient + diffuse_color + specular;
+
+                // Simple distance-based fog (from world origin).
+                let dist = length(in.world_pos);
+                let fog_start = 20.0;
+                let fog_end = 80.0;
+                let fog_factor = clamp((fog_end - dist) / (fog_end - fog_start), 0.0, 1.0);
+                let fog_color = vec3<f32>(0.05, 0.07, 0.10);
+                lit = mix(fog_color, lit, fog_factor);
+
                 return vec4(lit, 1.0);
             }
         "#;
@@ -382,9 +417,12 @@ impl<'window> Renderer<'window> {
             filter_tag: String::new(),
             filter_by_layer: false,
             filter_layer: 0,
+            scene_path: "scene.json".to_string(),
+            can_undo: false,
+            can_redo: false,
         };
 
-        let mesh_assets = discover_mesh_assets(&egui_ctx, "editor/3D assets");
+        let mesh_assets = Vec::new();
 
         // Create a large ground plane mesh (endless-looking).
         let ground_half_size = 1000.0_f32;
@@ -445,8 +483,14 @@ impl<'window> Renderer<'window> {
             egui_renderer,
             ui_state,
             mesh_assets,
+            assets_loaded: false,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             mesh_cache,
             ground_mesh,
+            dragging_entity: None,
+            drag_plane_y: 0.0,
+            default_mesh_path: default_mesh_path.to_string(),
         }
     }
 
@@ -488,12 +532,25 @@ impl<'window> Renderer<'window> {
     }
 
     fn render(&mut self, scene: &mut Scene, dt: f32) -> Result<(), SurfaceError> {
+        // Snapshot scene at the start of the frame so we can push
+        // an undo state if a gizmo drag begins this frame.
+        let scene_snapshot = scene.clone();
+
         // Build editor UI with egui.
         let raw_input = self.egui_winit.take_egui_input(self.window);
         let mut delete_entity: Option<usize> = None;
         let mut duplicate_entity: Option<usize> = None;
+        let mut set_player_for: Option<usize> = None;
+        let mut set_trigger_for: Option<usize> = None;
+        let mut align_ground_for: Option<usize> = None;
         let mut reload_glb: Option<String> = None;
         let mut convert_assets: bool = false;
+        let mut do_undo: bool = false;
+        let mut do_redo: bool = false;
+        let can_undo = self.ui_state.can_undo;
+        let can_redo = self.ui_state.can_redo;
+        let mut gizmo_drag_started = false;
+        let mut inspector_changed = false;
         let full_output = {
             let ui_state = &mut self.ui_state;
             let scene_ref: &mut Scene = scene;
@@ -507,6 +564,14 @@ impl<'window> Renderer<'window> {
                     "Camera: ({:.2}, {:.2}, {:.2})",
                     camera_ref.position.x, camera_ref.position.y, camera_ref.position.z
                 ));
+
+                let input = ctx.input(|i| i.clone());
+                if input.modifiers.ctrl && input.key_pressed(egui::Key::Z) {
+                    do_undo = true;
+                }
+                if input.modifiers.ctrl && input.key_pressed(egui::Key::Y) {
+                    do_redo = true;
+                }
             });
 
             egui::SidePanel::left("left_panel")
@@ -535,17 +600,37 @@ impl<'window> Renderer<'window> {
                 ui.heading("Physics");
                 ui.horizontal(|ui| {
                     ui.label("Gravity");
-                    ui.add(egui::DragValue::new(&mut scene_ref.gravity.x).speed(0.1));
-                    ui.add(egui::DragValue::new(&mut scene_ref.gravity.y).speed(0.1));
-                    ui.add(egui::DragValue::new(&mut scene_ref.gravity.z).speed(0.1));
+                    if ui
+                        .add(egui::DragValue::new(&mut scene_ref.gravity.x).speed(0.1))
+                        .changed()
+                    {
+                        inspector_changed = true;
+                    }
+                    if ui
+                        .add(egui::DragValue::new(&mut scene_ref.gravity.y).speed(0.1))
+                        .changed()
+                    {
+                        inspector_changed = true;
+                    }
+                    if ui
+                        .add(egui::DragValue::new(&mut scene_ref.gravity.z).speed(0.1))
+                        .changed()
+                    {
+                        inspector_changed = true;
+                    }
                 });
                 ui.horizontal(|ui| {
                     ui.label("Damping");
-                    ui.add(
-                        egui::DragValue::new(&mut scene_ref.linear_damping)
-                            .speed(0.01)
-                            .range(0.0..=5.0),
-                    );
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut scene_ref.linear_damping)
+                                .speed(0.01)
+                                .range(0.0..=5.0),
+                        )
+                        .changed()
+                    {
+                        inspector_changed = true;
+                    }
                 });
 
                 ui.separator();
@@ -569,19 +654,113 @@ impl<'window> Renderer<'window> {
                     ui.add(egui::DragValue::new(&mut ui_state.filter_layer).speed(1.0));
                 });
 
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(can_undo, egui::Button::new("Undo"))
+                        .clicked()
+                    {
+                        do_undo = true;
+                    }
+                    if ui
+                        .add_enabled(can_redo, egui::Button::new("Redo"))
+                        .clicked()
+                    {
+                        do_redo = true;
+                    }
+                });
+
                 if ui.button("Add entity").clicked() {
+                    self.undo_stack.push(scene_ref.clone());
+                    self.redo_stack.clear();
                     let index = scene_ref.entities.len();
-                    let mesh_path = ui_state.glb_path.clone();
+                    let mut mesh_path = if let Some(sel) = ui_state.selected_entity {
+                        scene_ref
+                            .entities
+                            .get(sel)
+                            .map(|e| e.mesh_path.clone())
+                            .unwrap_or_else(|| ui_state.glb_path.clone())
+                    } else {
+                        ui_state.glb_path.clone()
+                    };
+                    if mesh_path.is_empty() {
+                        mesh_path = self.default_mesh_path.clone();
+                    }
+                    // Spawn new entities in front of the camera so they
+                    // don't all start exactly on top of each other.
+                    let cam = &scene_ref.camera;
+                    let mut forward = cam.target - cam.position;
+                    if forward.length_squared() == 0.0 {
+                        forward = Vec3::new(0.0, 0.0, -1.0);
+                    }
+                    forward = forward.normalize();
+                    let base_pos = cam.position + forward * 5.0;
+                    // Slight offset per index so multiple new entities are visible.
+                    let offset = Vec3::new(index as f32 * 5.0, 0.0, 0.0);
                     scene_ref.entities.push(engine::Entity {
                         name: format!("Entity {}", index),
-                        transform: engine::math::Transform::identity(),
+                        transform: engine::math::Transform {
+                            translation: base_pos + offset,
+                            rotation: Quat::IDENTITY,
+                            scale: Vec3::ONE,
+                        },
                         velocity: Vec3::ZERO,
                         acceleration: Vec3::ZERO,
                         mesh_path,
                         is_character: false,
-                        tag: String::new(),
+                        // If a tag filter is active, give the new entity that tag
+                        // so it is visible under the current filter.
+                        tag: if ui_state.filter_tag.is_empty() {
+                            String::new()
+                        } else {
+                            ui_state.filter_tag.clone()
+                        },
                         layer: 0,
                     });
+                }
+
+                if ui.button("Spawn 1000 stress entities").clicked() {
+                    self.undo_stack.push(scene_ref.clone());
+                    self.redo_stack.clear();
+                    let base_index = scene_ref.entities.len();
+                    let mesh_path = ui_state.glb_path.clone();
+                    let mut count = 0;
+                    'outer: for x in 0..10 {
+                        for y in 0..10 {
+                            for z in 0..10 {
+                                let idx = base_index + count;
+                                let pos = Vec3::new(
+                                    x as f32 * 2.0,
+                                    y as f32 * 2.0,
+                                    z as f32 * 2.0,
+                                );
+                                scene_ref.entities.push(engine::Entity {
+                                    name: format!("Stress {}", idx),
+                                    transform: engine::math::Transform {
+                                        translation: pos,
+                                        rotation: Quat::IDENTITY,
+                                        scale: Vec3::ONE,
+                                    },
+                                    velocity: Vec3::ZERO,
+                                    acceleration: Vec3::ZERO,
+                                    mesh_path: mesh_path.clone(),
+                                    is_character: false,
+                                    tag: "stress".to_string(),
+                                    layer: 0,
+                                });
+                                count += 1;
+                                if count >= 1000 {
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if ui.button("Delete stress entities").clicked() {
+                    self.undo_stack.push(scene_ref.clone());
+                    self.redo_stack.clear();
+                    scene_ref.entities.retain(|e| e.tag != "stress");
+                    ui_state.selected_entity = None;
                 }
 
                 for (i, entity) in scene_ref.entities.iter().enumerate() {
@@ -607,15 +786,38 @@ impl<'window> Renderer<'window> {
                     if let Some(entity) = scene_ref.entities.get_mut(i) {
                         ui.separator();
                         ui.label("Name");
-                        ui.text_edit_singleline(&mut entity.name);
+                        if ui.text_edit_singleline(&mut entity.name).changed() {
+                            inspector_changed = true;
+                        }
+
+                        ui.label(format!(
+                            "Mesh: {}",
+                            if entity.mesh_path.is_empty() {
+                                "<default>".to_string()
+                            } else {
+                                entity.mesh_path.clone()
+                            }
+                        ));
 
                         ui.horizontal(|ui| {
                             ui.label("Tag");
-                            ui.text_edit_singleline(&mut entity.tag);
+                            if ui.text_edit_singleline(&mut entity.tag).changed() {
+                                inspector_changed = true;
+                            }
                         });
                         ui.horizontal(|ui| {
                             ui.label("Layer");
-                            ui.add(egui::DragValue::new(&mut entity.layer).speed(1.0));
+                            if ui
+                                .add(egui::DragValue::new(&mut entity.layer).speed(1.0))
+                                .changed()
+                            {
+                                inspector_changed = true;
+                            }
+                            if ui.button("Show this layer").clicked() {
+                                ui_state.filter_tag.clear();
+                                ui_state.filter_by_layer = true;
+                                ui_state.filter_layer = entity.layer;
+                            }
                         });
 
                         ui.separator();
@@ -634,6 +836,9 @@ impl<'window> Renderer<'window> {
                                 egui::DragValue::new(&mut entity.transform.translation.z)
                                     .speed(0.1),
                             );
+                            if resp_x.changed() || resp_y.changed() || resp_z.changed() {
+                                inspector_changed = true;
+                            }
                             if ui_state.grid_snap && ui_state.grid_size > 0.0 {
                                 let snap = |v: &mut f32, step: f32| {
                                     *v = (*v / step).round() * step;
@@ -651,46 +856,65 @@ impl<'window> Renderer<'window> {
                         });
                         ui.horizontal(|ui| {
                             ui.label("Scale");
-                            ui.add(
+                            let s_x = ui.add(
                                 egui::DragValue::new(&mut entity.transform.scale.x).speed(0.1),
                             );
-                            ui.add(
+                            let s_y = ui.add(
                                 egui::DragValue::new(&mut entity.transform.scale.y).speed(0.1),
                             );
-                            ui.add(
+                            let s_z = ui.add(
                                 egui::DragValue::new(&mut entity.transform.scale.z).speed(0.1),
                             );
+                            if s_x.changed() || s_y.changed() || s_z.changed() {
+                                inspector_changed = true;
+                            }
                         });
 
                         ui.separator();
                         ui.label("Selected entity physics");
                         ui.horizontal(|ui| {
                             ui.label("Acceleration");
-                            ui.add(
+                            let a_x = ui.add(
                                 egui::DragValue::new(&mut entity.acceleration.x).speed(0.1),
                             );
-                            ui.add(
+                            let a_y = ui.add(
                                 egui::DragValue::new(&mut entity.acceleration.y).speed(0.1),
                             );
-                            ui.add(
+                            let a_z = ui.add(
                                 egui::DragValue::new(&mut entity.acceleration.z).speed(0.1),
                             );
+                            if a_x.changed() || a_y.changed() || a_z.changed() {
+                                inspector_changed = true;
+                            }
                         });
-                        ui.checkbox(
-                            &mut entity.is_character,
-                            "Character (no auto-spin)",
-                        );
+                        if ui
+                            .checkbox(
+                                &mut entity.is_character,
+                                "Character (no auto-spin)",
+                            )
+                            .changed()
+                        {
+                            inspector_changed = true;
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Set as player").clicked() {
+                                set_player_for = Some(i);
+                            }
+                            if ui.button("Set as trigger").clicked() {
+                                set_trigger_for = Some(i);
+                            }
+                        });
 
                         ui.horizontal(|ui| {
-                            if ui.button("Align to ground").clicked() {
-                                entity.transform.translation.y = 0.0;
-                            }
-                            if ui.button("Duplicate").clicked() {
-                                duplicate_entity = Some(i);
-                            }
-                            if ui.button("Delete").clicked() {
-                                delete_entity = Some(i);
-                            }
+                        if ui.button("Align to ground").clicked() {
+                            align_ground_for = Some(i);
+                        }
+                        if ui.button("Duplicate").clicked() {
+                            duplicate_entity = Some(i);
+                        }
+                        if ui.button("Delete").clicked() {
+                            delete_entity = Some(i);
+                        }
                         });
                     } else {
                         ui_state.selected_entity = None;
@@ -698,17 +922,32 @@ impl<'window> Renderer<'window> {
                 }
 
                 ui.separator();
-                if ui.button("Save scene").clicked() {
-                    if let Err(err) = engine::scene_io::save_scene_to_file("scene.json", scene_ref) {
-                        log::error!("Failed to save scene: {}", err);
+                ui.heading("Scene");
+                ui.horizontal(|ui| {
+                    ui.label("File");
+                    ui.text_edit_singleline(&mut ui_state.scene_path);
+                });
+                if ui.button("Save").clicked() {
+                    if let Err(err) =
+                        engine::scene_io::save_scene_to_file(&ui_state.scene_path, scene_ref)
+                    {
+                        log::error!("Failed to save scene '{}': {}", ui_state.scene_path, err);
                     }
                 }
-                if ui.button("Load scene").clicked() {
-                    if let Some(new_scene) = engine::scene_io::load_scene_from_file("scene.json") {
+                if ui.button("Load").clicked() {
+                    if let Some(new_scene) =
+                        engine::scene_io::load_scene_from_file(&ui_state.scene_path)
+                    {
+                        self.undo_stack.push(scene_ref.clone());
+                        self.redo_stack.clear();
                         *scene_ref = new_scene;
                         ui_state.selected_entity = None;
+                    } else {
+                        log::error!("Failed to load scene '{}'", ui_state.scene_path);
                     }
                 }
+
+                ui.separator();
             });
 
             // Viewport gizmo for moving/rotating the selected entity.
@@ -733,49 +972,92 @@ impl<'window> Renderer<'window> {
                             .order(egui::Order::Foreground)
                             .fixed_pos(egui::pos2(0.0, 0.0))
                             .show(ctx, |ui| {
-                                let gizmo_size = egui::vec2(40.0, 40.0);
-                                let rect =
-                                    egui::Rect::from_center_size(screen_pos, gizmo_size);
-                                let id = egui::Id::new("translate_rotate_gizmo");
-                                let response =
-                                    ui.interact(rect, id, egui::Sense::drag());
                                 let painter = ui.painter();
+                                let axis_len = 30.0;
+                                let thickness = 6.0;
+
+                                // Axis X handle (red), horizontal.
+                                let rect_x = egui::Rect::from_center_size(
+                                    screen_pos + egui::vec2(axis_len * 0.5, 0.0),
+                                    egui::vec2(axis_len, thickness),
+                                );
+                                // Axis Z handle (green), vertical (screen space).
+                                let rect_z = egui::Rect::from_center_size(
+                                    screen_pos + egui::vec2(0.0, -axis_len * 0.5),
+                                    egui::vec2(thickness, axis_len),
+                                );
+                                // Center handle for rotation/plane move.
+                                let rect_center = egui::Rect::from_center_size(
+                                    screen_pos,
+                                    egui::vec2(18.0, 18.0),
+                                );
+
+                                let id_x = egui::Id::new("gizmo_translate_x");
+                                let id_z = egui::Id::new("gizmo_translate_z");
+                                let id_c = egui::Id::new("gizmo_center");
+
+                                let response_x =
+                                    ui.interact(rect_x, id_x, egui::Sense::drag());
+                                let response_z =
+                                    ui.interact(rect_z, id_z, egui::Sense::drag());
+                                let response_c =
+                                    ui.interact(rect_center, id_c, egui::Sense::drag());
+
+                                // Draw handles.
                                 painter.rect_stroke(
-                                    rect,
-                                    0.0,
+                                    rect_center,
+                                    4.0,
                                     egui::Stroke::new(1.0, egui::Color32::YELLOW),
                                 );
                                 painter.line_segment(
                                     [
-                                        screen_pos - egui::vec2(10.0, 0.0),
-                                        screen_pos + egui::vec2(10.0, 0.0),
+                                        screen_pos,
+                                        screen_pos + egui::vec2(axis_len, 0.0),
                                     ],
-                                    egui::Stroke::new(1.0, egui::Color32::RED),
+                                    egui::Stroke::new(2.0, egui::Color32::RED),
                                 );
                                 painter.line_segment(
                                     [
-                                        screen_pos - egui::vec2(0.0, 10.0),
-                                        screen_pos + egui::vec2(0.0, 10.0),
+                                        screen_pos,
+                                        screen_pos - egui::vec2(0.0, axis_len),
                                     ],
-                                    egui::Stroke::new(1.0, egui::Color32::GREEN),
+                                    egui::Stroke::new(2.0, egui::Color32::GREEN),
                                 );
 
-                                if response.dragged() {
+                                if response_x.drag_started()
+                                    || response_z.drag_started()
+                                    || response_c.drag_started()
+                                {
+                                    gizmo_drag_started = true;
+                                }
+
+                                if self.dragging_entity.is_none() {
                                     let (pointer_delta, modifiers) =
                                         ui.ctx().input(|i| (i.pointer.delta(), i.modifiers));
-                                    // Hold Shift to rotate around Y; otherwise translate in X/Z.
-                                    if modifiers.shift {
-                                        let angle = -pointer_delta.x as f32 * 0.01;
-                                        let rot =
-                                            Quat::from_rotation_y(angle);
-                                        entity.transform.rotation =
-                                            rot * entity.transform.rotation;
-                                    } else {
+
+                                    // Axis-constrained translation.
+                                    if response_x.dragged() {
                                         let scale = 0.01;
                                         entity.transform.translation.x +=
                                             pointer_delta.x as f32 * scale;
+                                    } else if response_z.dragged() {
+                                        let scale = 0.01;
                                         entity.transform.translation.z -=
                                             pointer_delta.y as f32 * scale;
+                                    } else if response_c.dragged() {
+                                        // Center: Shift-drag rotates, otherwise free XZ move.
+                                        if modifiers.shift {
+                                            let angle = -pointer_delta.x as f32 * 0.01;
+                                            let rot = Quat::from_rotation_y(angle);
+                                            entity.transform.rotation =
+                                                rot * entity.transform.rotation;
+                                        } else {
+                                            let scale = 0.01;
+                                            entity.transform.translation.x +=
+                                                pointer_delta.x as f32 * scale;
+                                            entity.transform.translation.z -=
+                                                pointer_delta.y as f32 * scale;
+                                        }
                                     }
                                 }
                             });
@@ -789,47 +1071,98 @@ impl<'window> Renderer<'window> {
                     .resizable(true)
                     .default_width(320.0)
                     .show(ctx, |ui| {
-                        if ui.button("Convert assets (copy + FBX -> GLB)").clicked() {
-                            convert_assets = true;
-                        }
-                        ui.separator();
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            for asset in &self.mesh_assets {
-                                ui.horizontal(|ui| {
-                                    if let Some(tex) = &asset.thumbnail {
-                                        let size = tex.size_vec2();
-                                        let scale = 64.0 / size.y.max(1.0);
-                                        let image = egui::Image::new((
-                                            tex.id(),
-                                            egui::vec2(size.x * scale, size.y * scale),
-                                        ));
-                                        ui.add(image);
-                                    }
+                        if !self.assets_loaded {
+                            ui.label("Please wait, loading assets...");
+                            // Request a one‑time load of assets after this frame.
+                            convert_assets = false;
+                        } else {
+                            if ui
+                                .button("Convert assets (copy + FBX -> GLB)")
+                                .clicked()
+                            {
+                                convert_assets = true;
+                            }
+                            ui.separator();
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                for asset in &self.mesh_assets {
+                                    ui.horizontal(|ui| {
+                                        if let Some(tex) = &asset.thumbnail {
+                                            let size = tex.size_vec2();
+                                            let scale = 64.0 / size.y.max(1.0);
+                                            let image = egui::Image::new((
+                                                tex.id(),
+                                                egui::vec2(size.x * scale, size.y * scale),
+                                            ));
+                                            ui.add(image);
+                                        }
 
-                                    let label = if ui_state.glb_path == asset.mesh_path {
-                                        format!("{} (selected)", asset.name)
-                                    } else {
-                                        asset.name.clone()
-                                    };
+                                        let label = if ui_state.glb_path == asset.mesh_path {
+                                            format!("{} (selected)", asset.name)
+                                        } else {
+                                            asset.name.clone()
+                                        };
 
-                                    if ui.button(label).clicked() {
-                                        ui_state.glb_path = asset.mesh_path.clone();
-                                        reload_glb = Some(asset.mesh_path.clone());
-                                        if let Some(sel) = ui_state.selected_entity {
-                                            if let Some(ent) = scene_ref.entities.get_mut(sel) {
-                                                ent.mesh_path = asset.mesh_path.clone();
+                                        if ui.button(label).clicked() {
+                                            ui_state.glb_path = asset.mesh_path.clone();
+                                            reload_glb = Some(asset.mesh_path.clone());
+                                            if let Some(sel) = ui_state.selected_entity {
+                                                if let Some(ent) = scene_ref
+                                                    .entities
+                                                    .get_mut(sel)
+                                                {
+                                                    ent.mesh_path =
+                                                        asset.mesh_path.clone();
+                                                    inspector_changed = true;
+                                                }
                                             }
                                         }
-                                    }
-                                });
-                                ui.separator();
-                            }
-                        });
+                                    });
+                                    ui.separator();
+                                }
+                            });
+                        }
                     });
             }
             })
         };
+
+        // If a gizmo drag or inspector edit started this frame, push an undo snapshot
+        // captured at the beginning of render.
+        if gizmo_drag_started || inspector_changed {
+            self.undo_stack.push(scene_snapshot);
+            self.redo_stack.clear();
+        }
+
+        // If the primary mouse button is no longer held, stop any drag in progress.
+        let pointer_down = self.egui_ctx.input(|i| i.pointer.primary_down());
+        if !pointer_down {
+            self.dragging_entity = None;
+        }
+        // Apply deferred entity actions that require whole-scene access.
+        if set_player_for.is_some() || set_trigger_for.is_some() || align_ground_for.is_some() {
+            self.undo_stack.push(scene.clone());
+            self.redo_stack.clear();
+        }
+        if let Some(i) = set_player_for {
+            if let Some(entity) = scene.entities.get_mut(i) {
+                entity.tag = "player".to_string();
+                entity.is_character = true;
+            }
+        }
+        if let Some(i) = set_trigger_for {
+            if let Some(entity) = scene.entities.get_mut(i) {
+                entity.tag = "trigger".to_string();
+                entity.is_character = false;
+            }
+        }
+        if let Some(i) = align_ground_for {
+            if let Some(entity) = scene.entities.get_mut(i) {
+                entity.transform.translation.y = 0.0;
+            }
+        }
         if let Some(i) = delete_entity {
+            self.undo_stack.push(scene.clone());
+            self.redo_stack.clear();
             if i < scene.entities.len() {
                 scene.entities.remove(i);
                 if scene.entities.is_empty() {
@@ -841,23 +1174,55 @@ impl<'window> Renderer<'window> {
                 }
             }
         }
+        if !self.assets_loaded && self.ui_state.show_assets_window {
+            let mut assets = discover_mesh_assets(&self.egui_ctx, "editor/3D assets");
+            assets.extend(discover_mesh_assets(
+                &self.egui_ctx,
+                "editor/Converted assets",
+            ));
+            self.mesh_assets = assets;
+            self.assets_loaded = true;
+        }
+        if do_undo {
+            if let Some(prev) = self.undo_stack.pop() {
+                self.redo_stack.push(scene.clone());
+                *scene = prev;
+            }
+        }
+        if do_redo {
+            if let Some(next) = self.redo_stack.pop() {
+                self.undo_stack.push(scene.clone());
+                *scene = next;
+            }
+        }
+        self.ui_state.can_undo = !self.undo_stack.is_empty();
+        self.ui_state.can_redo = !self.redo_stack.is_empty();
+
         if convert_assets {
             convert_assets_to_glb("editor/3D assets", "editor/Converted assets");
             let mut assets = discover_mesh_assets(&self.egui_ctx, "editor/3D assets");
-            assets.extend(discover_mesh_assets(&self.egui_ctx, "editor/Converted assets"));
+            assets.extend(discover_mesh_assets(
+                &self.egui_ctx,
+                "editor/Converted assets",
+            ));
             self.mesh_assets = assets;
+            self.assets_loaded = true;
         }
 
         if let Some(i) = duplicate_entity {
             if i < scene.entities.len() {
                 let src = &scene.entities[i];
+                // Offset the duplicate slightly so it doesn't sit exactly
+                // on top of the original.
+                let mut new_transform = engine::math::Transform {
+                    translation: src.transform.translation,
+                    rotation: src.transform.rotation,
+                    scale: src.transform.scale,
+                };
+                new_transform.translation.x += 5.0;
                 scene.entities.push(engine::Entity {
                     name: format!("{} Copy", src.name),
-                    transform: engine::math::Transform {
-                        translation: src.transform.translation,
-                        rotation: src.transform.rotation,
-                        scale: src.transform.scale,
-                    },
+                    transform: new_transform,
                     velocity: Vec3::ZERO,
                     acceleration: Vec3::ZERO,
                     mesh_path: src.mesh_path.clone(),
@@ -907,7 +1272,7 @@ impl<'window> Renderer<'window> {
         let ambient = self.ui_state.ambient;
         let specular = self.ui_state.specular;
         let shininess = self.ui_state.shininess;
-        let default_mesh_path = self.ui_state.glb_path.clone();
+        let default_mesh_path = self.default_mesh_path.clone();
         let filter_tag = self.ui_state.filter_tag.clone();
         let filter_by_layer = self.ui_state.filter_by_layer;
         let filter_layer = self.ui_state.filter_layer;
@@ -1126,6 +1491,13 @@ impl<'window> Renderer<'window> {
 }
 
 fn main() {
+    // Configure Rayon to use up to 16 threads (or however many are available, if fewer).
+    if let Ok(threads) = std::thread::available_parallelism() {
+        let max_threads = 16usize;
+        let n = threads.get().min(max_threads).max(1);
+        let _ = ThreadPoolBuilder::new().num_threads(n).build_global();
+    }
+
     env_logger::init();
     info!("Starting editor...");
 
@@ -1216,6 +1588,34 @@ fn main() {
                                 if pressed {
                                     input.last_cursor_pos = None;
                                 }
+                            } else if button == winit::event::MouseButton::Left {
+                                let pressed = state == winit::event::ElementState::Pressed;
+                                if pressed {
+                                    if let Some((x, y)) = input.last_cursor_pos {
+                                        if let Some(index) = pick_entity_at_cursor(
+                                            &engine.scene,
+                                            &engine.scene.camera,
+                                            renderer.config.width,
+                                            renderer.config.height,
+                                            x,
+                                            y,
+                                        ) {
+                                            renderer.undo_stack.push(engine.scene.clone());
+                                            renderer.redo_stack.clear();
+                                            renderer.ui_state.selected_entity = Some(index);
+                                            renderer.drag_plane_y = engine.scene.entities[index]
+                                                .transform
+                                                .translation
+                                                .y;
+                                            renderer.dragging_entity = Some(index);
+                                        } else {
+                                            renderer.dragging_entity = None;
+                                            renderer.ui_state.selected_entity = None;
+                                        }
+                                    }
+                                } else {
+                                    renderer.dragging_entity = None;
+                                }
                             }
                         }
                         WindowEvent::CursorMoved { position, .. } => {
@@ -1228,6 +1628,32 @@ fn main() {
                                 input.last_cursor_pos = Some((position.x, position.y));
                             } else {
                                 input.last_cursor_pos = Some((position.x, position.y));
+                            }
+
+                            if let Some(index) = renderer.dragging_entity {
+                                if let Some((origin, dir)) = screen_ray(
+                                    &engine.scene.camera,
+                                    renderer.config.width,
+                                    renderer.config.height,
+                                    position.x,
+                                    position.y,
+                                ) {
+                                    if let Some(hit) = ray_plane_y(origin, dir, renderer.drag_plane_y) {
+                                        if let Some(entity) = engine.scene.entities.get_mut(index) {
+                                            let mut pos = hit;
+                                            if renderer.ui_state.grid_snap
+                                                && renderer.ui_state.grid_size > 0.0
+                                            {
+                                                let step = renderer.ui_state.grid_size;
+                                                let snap = |v: f32| (v / step).round() * step;
+                                                pos.x = snap(pos.x);
+                                                pos.y = snap(pos.y);
+                                                pos.z = snap(pos.z);
+                                            }
+                                            entity.transform.translation = pos;
+                                        }
+                                    }
+                                }
                             }
                         }
                         WindowEvent::MouseWheel { delta, .. } => {
@@ -1354,6 +1780,115 @@ fn zoom_camera_along_view(camera: &mut Camera, scroll: f32) {
     let dir = forward.normalize();
     let amount = scroll * 0.5;
     camera.position += dir * amount;
+}
+
+fn screen_ray(
+    camera: &Camera,
+    width: u32,
+    height: u32,
+    x: f64,
+    y: f64,
+) -> Option<(Vec3, Vec3)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let view_proj: Mat4 = camera.view_projection_matrix();
+    let inv = view_proj.inverse();
+
+    let sx = x as f32 / width as f32;
+    let sy = y as f32 / height as f32;
+    let ndc_x = sx * 2.0 - 1.0;
+    let ndc_y = 1.0 - sy * 2.0;
+
+    let near_clip = Vec3::new(ndc_x, ndc_y, 0.0).extend(1.0);
+    let far_clip = Vec3::new(ndc_x, ndc_y, 1.0).extend(1.0);
+
+    let near_world4 = inv * near_clip;
+    let far_world4 = inv * far_clip;
+
+    let near_world = Vec3::new(
+        near_world4.x / near_world4.w,
+        near_world4.y / near_world4.w,
+        near_world4.z / near_world4.w,
+    );
+    let far_world = Vec3::new(
+        far_world4.x / far_world4.w,
+        far_world4.y / far_world4.w,
+        far_world4.z / far_world4.w,
+    );
+
+    let origin = camera.position;
+    let dir = (far_world - origin).normalize();
+    Some((origin, dir))
+}
+
+fn ray_sphere_intersect(
+    origin: Vec3,
+    dir: Vec3,
+    center: Vec3,
+    radius: f32,
+) -> Option<f32> {
+    let oc = origin - center;
+    let a = dir.dot(dir);
+    let b = 2.0 * oc.dot(dir);
+    let c = oc.dot(oc) - radius * radius;
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        return None;
+    }
+    let sqrt_disc = disc.sqrt();
+    let mut t = (-b - sqrt_disc) / (2.0 * a);
+    if t < 0.0 {
+        t = (-b + sqrt_disc) / (2.0 * a);
+        if t < 0.0 {
+            return None;
+        }
+    }
+    Some(t)
+}
+
+fn pick_entity_at_cursor(
+    scene: &Scene,
+    camera: &Camera,
+    width: u32,
+    height: u32,
+    x: f64,
+    y: f64,
+) -> Option<usize> {
+    let (origin, dir) = screen_ray(camera, width, height, x, y)?;
+    let mut best_t = f32::MAX;
+    let mut best_index = None;
+
+    for (i, entity) in scene.entities.iter().enumerate() {
+        let center = entity.transform.translation;
+        let scale = entity.transform.scale;
+        let mut radius = scale.x.abs().max(scale.y.abs()).max(scale.z.abs());
+        if radius <= 0.0 {
+            radius = 0.5;
+        }
+
+        if let Some(t) = ray_sphere_intersect(origin, dir, center, radius) {
+            if t < best_t {
+                best_t = t;
+                best_index = Some(i);
+            }
+        }
+    }
+
+    best_index
+}
+
+fn ray_plane_y(origin: Vec3, dir: Vec3, plane_y: f32) -> Option<Vec3> {
+    let denom = dir.y;
+    if denom.abs() < 1e-4 {
+        return None;
+    }
+    let t = (plane_y - origin.y) / denom;
+    if t < 0.0 {
+        return None;
+    }
+    Some(origin + dir * t)
 }
 
 fn load_mesh_from_json(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {

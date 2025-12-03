@@ -1,5 +1,6 @@
 pub use glam::{Mat4, Quat, Vec3};
 
+#[derive(Clone)]
 pub struct Transform {
     pub translation: Vec3,
     pub rotation: Quat,
@@ -20,6 +21,7 @@ impl Transform {
     }
 }
 
+#[derive(Clone)]
 pub struct Camera {
     pub position: Vec3,
     pub target: Vec3,

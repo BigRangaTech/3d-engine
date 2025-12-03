@@ -1,0 +1,101 @@
+{
+  "entities": [
+    {
+      "name": "Entity 0",
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.7595399,
+          0.0,
+          -0.65035605
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "velocity": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "acceleration": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mesh_path": "editor/3D assets/Weapon Pack/Models/GLTF format/pistol.glb",
+      "is_character": false,
+      "tag": "2",
+      "layer": 0
+    },
+    {
+      "name": "Entity 1",
+      "transform": {
+        "translation": [
+          1.5,
+          0.0,
+          0.35761642
+        ],
+        "rotation": [
+          0.0,
+          -0.7469599,
+          0.0,
+          0.66481656
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "velocity": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "acceleration": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mesh_path": "editor/3D assets/Weapon Pack/Models/GLTF format/pistol.glb",
+      "is_character": false,
+      "tag": "2",
+      "layer": 0
+    }
+  ],
+  "camera": {
+    "position": [
+      0.0,
+      2.0,
+      5.0
+    ],
+    "target": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "up": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "fov_y_radians": 0.7853982,
+    "aspect": 1.3333334,
+    "z_near": 0.1,
+    "z_far": 100.0
+  },
+  "gravity": [
+    0.0,
+    -9.81,
+    0.0
+  ],
+  "linear_damping": 0.2
+}

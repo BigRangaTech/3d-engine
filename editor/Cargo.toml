@@ -20,3 +20,4 @@ gltf = "1.4"
 tobj = "4"
 stl_io = "0.4"
 image = { version = "0.24", default-features = false, features = ["png"] }
+rayon = "1.10"

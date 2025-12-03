@@ -1,10 +1,14 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+mod player;
+
+use crate::player::CameraOrbitState;
 use engine::{Engine, Scene};
 use engine::math::{Camera, Mat4, Quat, Vec3};
 use log::info;
 use gltf;
+use rayon::ThreadPoolBuilder;
 use wgpu::util::DeviceExt;
 use wgpu::SurfaceError;
 use winit::{dpi::PhysicalSize, event::*, event_loop::EventLoop, window::WindowBuilder};
@@ -643,6 +647,19 @@ fn zoom_camera_along_view(camera: &mut Camera, scroll: f32) {
     camera.position += dir * amount;
 }
 
+fn update_orbit_from_mouse(orbit: &mut CameraOrbitState, dx: f32, dy: f32) {
+    let sensitivity = 0.005;
+    orbit.yaw -= dx * sensitivity;
+    orbit.pitch = (orbit.pitch - dy * sensitivity)
+        .clamp(-1.2, 1.2);
+}
+
+fn zoom_orbit(orbit: &mut CameraOrbitState, scroll: f32) {
+    let amount = -scroll * 0.5;
+    orbit.distance = (orbit.distance + amount)
+        .clamp(2.0, 30.0);
+}
+
 fn builtin_cube_mesh() -> (Vec<Vertex>, Vec<u32>) {
     let base_positions = [
         Vec3::new(-0.5, -0.5, -0.5),
@@ -883,6 +900,13 @@ fn load_mesh_from_stl(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
 }
 
 fn main() {
+    // Configure Rayon to use up to 16 threads (or fewer if not available).
+    if let Ok(threads) = std::thread::available_parallelism() {
+        let max_threads = 16usize;
+        let n = threads.get().min(max_threads).max(1);
+        let _ = ThreadPoolBuilder::new().num_threads(n).build_global();
+    }
+
     env_logger::init();
     info!("Starting game runner...");
 
@@ -905,8 +929,8 @@ fn main() {
                 acceleration: Vec3::ZERO,
                 mesh_path: "editor/3D assets/Weapon Pack/Models/GLTF format/pistol.glb"
                     .to_string(),
-                is_character: false,
-                tag: String::new(),
+                is_character: true,
+                tag: "player".to_string(),
                 layer: 0,
             }],
             camera,
@@ -926,6 +950,11 @@ fn main() {
 
     let mut renderer = pollster::block_on(Renderer::new(window));
     let mut input = InputState::default();
+    let mut orbit = CameraOrbitState {
+        yaw: 0.0,
+        pitch: -0.3,
+        distance: 6.0,
+    };
     let mut last_frame = Instant::now();
 
     let ambient = 0.2;
@@ -974,8 +1003,8 @@ fn main() {
                                 if let Some((lx, ly)) = input.last_cursor_pos {
                                     let dx = position.x - lx;
                                     let dy = position.y - ly;
-                                    rotate_camera_from_mouse(
-                                        &mut engine.scene.camera,
+                                    update_orbit_from_mouse(
+                                        &mut orbit,
                                         dx as f32,
                                         dy as f32,
                                     );
@@ -993,7 +1022,7 @@ fn main() {
                                 }
                             };
                             if scroll.abs() > 0.0 {
-                                zoom_camera_along_view(&mut engine.scene.camera, scroll);
+                                zoom_orbit(&mut orbit, scroll);
                             }
                         }
                         WindowEvent::Resized(size) => {
@@ -1004,8 +1033,11 @@ fn main() {
                             let dt = (now - last_frame).as_secs_f32();
                             last_frame = now;
 
-                            update_camera_from_input(&mut engine.scene.camera, &input, dt);
+                            // Third-person: move player from input, then update physics and camera.
+                            player::update_player_from_input(&mut engine.scene, &input, dt);
                             engine.update(dt);
+                            player::update_third_person_camera(&mut engine.scene, &orbit);
+                            player::check_triggers(&engine.scene);
 
                             match renderer.render(&engine.scene, ambient, specular, shininess) {
                                 Ok(()) => {}

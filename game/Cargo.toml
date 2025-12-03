@@ -14,4 +14,4 @@ bytemuck = { version = "1.16", features = ["derive"] }
 gltf = "1.4"
 tobj = "4"
 stl_io = "0.4"
-
+rayon = "1.10"
