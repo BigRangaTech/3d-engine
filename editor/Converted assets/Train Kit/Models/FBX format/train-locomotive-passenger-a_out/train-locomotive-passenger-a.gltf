@@ -1,0 +1,431 @@
+{
+    "asset": {
+        "generator": "FBX2glTF v0.13.1",
+        "version": "2.0"
+    },
+    "scene": 0,
+    "buffers": [
+        {
+            "byteLength": 96936,
+            "uri": "buffer.bin"
+        }
+    ],
+    "bufferViews": [
+        {
+            "buffer": 0,
+            "byteLength": 4056,
+            "byteOffset": 0,
+            "target": 34963
+        },
+        {
+            "buffer": 0,
+            "byteLength": 11952,
+            "byteOffset": 4056,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 11952,
+            "byteOffset": 16008,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 15936,
+            "byteOffset": 27960,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 7968,
+            "byteOffset": 43896,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1896,
+            "byteOffset": 51864,
+            "target": 34963
+        },
+        {
+            "buffer": 0,
+            "byteLength": 5160,
+            "byteOffset": 53760,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 5160,
+            "byteOffset": 58920,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 6880,
+            "byteOffset": 64080,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 3440,
+            "byteOffset": 70960,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1896,
+            "byteOffset": 74400,
+            "target": 34963
+        },
+        {
+            "buffer": 0,
+            "byteLength": 5160,
+            "byteOffset": 76296,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 5160,
+            "byteOffset": 81456,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 6880,
+            "byteOffset": 86616,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 3440,
+            "byteOffset": 93496,
+            "target": 34962
+        }
+    ],
+    "scenes": [
+        {
+            "name": "Root Scene",
+            "nodes": [
+                0
+            ]
+        }
+    ],
+    "accessors": [
+        {
+            "componentType": 5123,
+            "type": "SCALAR",
+            "count": 2028,
+            "bufferView": 0,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 996,
+            "bufferView": 1,
+            "byteOffset": 0,
+            "min": [
+                -0.596857607364655,
+                0.159499362111092,
+                -1.15000009536743
+            ],
+            "max": [
+                0.596857607364655,
+                1.64911723136902,
+                1.45000016689301
+            ]
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 996,
+            "bufferView": 2,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC4",
+            "count": 996,
+            "bufferView": 3,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC2",
+            "count": 996,
+            "bufferView": 4,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5123,
+            "type": "SCALAR",
+            "count": 948,
+            "bufferView": 5,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 430,
+            "bufferView": 6,
+            "byteOffset": 0,
+            "min": [
+                -0.491499960422516,
+                -0.359499365091324,
+                -0.380596041679382
+            ],
+            "max": [
+                0.491499960422516,
+                0.0,
+                0.380596041679382
+            ]
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 430,
+            "bufferView": 7,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC4",
+            "count": 430,
+            "bufferView": 8,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC2",
+            "count": 430,
+            "bufferView": 9,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5123,
+            "type": "SCALAR",
+            "count": 948,
+            "bufferView": 10,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 430,
+            "bufferView": 11,
+            "byteOffset": 0,
+            "min": [
+                -0.491499960422516,
+                -0.359499365091324,
+                -0.380596041679382
+            ],
+            "max": [
+                0.491499960422516,
+                0.0,
+                0.380596041679382
+            ]
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 430,
+            "bufferView": 12,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC4",
+            "count": 430,
+            "bufferView": 13,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC2",
+            "count": 430,
+            "bufferView": 14,
+            "byteOffset": 0
+        }
+    ],
+    "images": [
+        {
+            "name": "colormap.png",
+            "uri": "colormap.png"
+        }
+    ],
+    "samplers": [
+        {}
+    ],
+    "textures": [
+        {
+            "name": "DiffuseColor_Texture",
+            "sampler": 0,
+            "source": 0
+        }
+    ],
+    "materials": [
+        {
+            "name": "colormap",
+            "alphaMode": "OPAQUE",
+            "doubleSided": false,
+            "extras": {
+                "fromFBX": {
+                    "shadingModel": "Lambert",
+                    "isTruePBR": false
+                }
+            },
+            "pbrMetallicRoughness": {
+                "baseColorTexture": {
+                    "index": 0,
+                    "texCoord": 0
+                },
+                "baseColorFactor": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0
+                ],
+                "metallicFactor": 0.200000002980232,
+                "roughnessFactor": 0.800000011920929
+            }
+        }
+    ],
+    "meshes": [
+        {
+            "name": "train-locomotive-passenger-a",
+            "primitives": [
+                {
+                    "material": 0,
+                    "mode": 4,
+                    "attributes": {
+                        "NORMAL": 2,
+                        "POSITION": 1,
+                        "TANGENT": 3,
+                        "TEXCOORD_0": 4
+                    },
+                    "indices": 0
+                }
+            ]
+        },
+        {
+            "name": "wheels-front",
+            "primitives": [
+                {
+                    "material": 0,
+                    "mode": 4,
+                    "attributes": {
+                        "NORMAL": 7,
+                        "POSITION": 6,
+                        "TANGENT": 8,
+                        "TEXCOORD_0": 9
+                    },
+                    "indices": 5
+                }
+            ]
+        },
+        {
+            "name": "wheels-back",
+            "primitives": [
+                {
+                    "material": 0,
+                    "mode": 4,
+                    "attributes": {
+                        "NORMAL": 12,
+                        "POSITION": 11,
+                        "TANGENT": 13,
+                        "TEXCOORD_0": 14
+                    },
+                    "indices": 10
+                }
+            ]
+        }
+    ],
+    "nodes": [
+        {
+            "name": "RootNode",
+            "translation": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "children": [
+                1
+            ]
+        },
+        {
+            "name": "train-locomotive-passenger-a",
+            "translation": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "children": [
+                2,
+                3
+            ],
+            "mesh": 0
+        },
+        {
+            "name": "wheels-front",
+            "translation": [
+                4.20874327142912e-13,
+                0.359499365091324,
+                0.699999988079071
+            ],
+            "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "mesh": 1
+        },
+        {
+            "name": "wheels-back",
+            "translation": [
+                4.22318186281065e-13,
+                0.359499365091324,
+                -0.399999976158142
+            ],
+            "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "mesh": 2
+        }
+    ]
+}

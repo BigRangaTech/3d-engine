@@ -1,0 +1,360 @@
+{
+    "asset": {
+        "generator": "FBX2glTF v0.13.1",
+        "version": "2.0"
+    },
+    "scene": 0,
+    "buffers": [
+        {
+            "byteLength": 15476,
+            "uri": "buffer.bin"
+        }
+    ],
+    "bufferViews": [
+        {
+            "buffer": 0,
+            "byteLength": 744,
+            "byteOffset": 0,
+            "target": 34963
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1716,
+            "byteOffset": 744,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1716,
+            "byteOffset": 2460,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1144,
+            "byteOffset": 4176,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 606,
+            "byteOffset": 5320,
+            "target": 34963
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1860,
+            "byteOffset": 5928,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1860,
+            "byteOffset": 7788,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1240,
+            "byteOffset": 9648,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 522,
+            "byteOffset": 10888,
+            "target": 34963
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1524,
+            "byteOffset": 11412,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1524,
+            "byteOffset": 12936,
+            "target": 34962
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1016,
+            "byteOffset": 14460,
+            "target": 34962
+        }
+    ],
+    "scenes": [
+        {
+            "name": "Root Scene",
+            "nodes": [
+                0
+            ]
+        }
+    ],
+    "accessors": [
+        {
+            "componentType": 5123,
+            "type": "SCALAR",
+            "count": 372,
+            "bufferView": 0,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 143,
+            "bufferView": 1,
+            "byteOffset": 0,
+            "min": [
+                -0.0999999940395355,
+                0.0,
+                0.0
+            ],
+            "max": [
+                0.0,
+                0.0999999940395355,
+                0.0458422191441059
+            ]
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 143,
+            "bufferView": 2,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC2",
+            "count": 143,
+            "bufferView": 3,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5123,
+            "type": "SCALAR",
+            "count": 303,
+            "bufferView": 4,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 155,
+            "bufferView": 5,
+            "byteOffset": 0,
+            "min": [
+                -0.0999999940395355,
+                0.0,
+                0.0
+            ],
+            "max": [
+                0.0,
+                0.0999999940395355,
+                0.0458422191441059
+            ]
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 155,
+            "bufferView": 6,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC2",
+            "count": 155,
+            "bufferView": 7,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5123,
+            "type": "SCALAR",
+            "count": 261,
+            "bufferView": 8,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 127,
+            "bufferView": 9,
+            "byteOffset": 0,
+            "min": [
+                -0.0795730501413345,
+                2.46106200374513e-17,
+                3.60955705403911e-16
+            ],
+            "max": [
+                -0.0249999985098839,
+                0.0949999913573265,
+                0.0458422191441059
+            ]
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC3",
+            "count": 127,
+            "bufferView": 10,
+            "byteOffset": 0
+        },
+        {
+            "componentType": 5126,
+            "type": "VEC2",
+            "count": 127,
+            "bufferView": 11,
+            "byteOffset": 0
+        }
+    ],
+    "samplers": [
+        {}
+    ],
+    "materials": [
+        {
+            "name": "natureKit-leavesGreen",
+            "alphaMode": "OPAQUE",
+            "doubleSided": false,
+            "extras": {
+                "fromFBX": {
+                    "shadingModel": "Phong",
+                    "isTruePBR": false
+                }
+            },
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [
+                    0.352941185235977,
+                    0.768627524375916,
+                    0.713725507259369,
+                    1.0
+                ],
+                "metallicFactor": 0.400000005960464,
+                "roughnessFactor": 1.0
+            }
+        },
+        {
+            "name": "natureKit-wood",
+            "alphaMode": "OPAQUE",
+            "doubleSided": false,
+            "extras": {
+                "fromFBX": {
+                    "shadingModel": "Phong",
+                    "isTruePBR": false
+                }
+            },
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [
+                    1.0,
+                    0.682353019714355,
+                    0.435294091701508,
+                    1.0
+                ],
+                "metallicFactor": 0.400000005960464,
+                "roughnessFactor": 1.0
+            }
+        },
+        {
+            "name": "natureKit-water",
+            "alphaMode": "OPAQUE",
+            "doubleSided": false,
+            "extras": {
+                "fromFBX": {
+                    "shadingModel": "Phong",
+                    "isTruePBR": false
+                }
+            },
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [
+                    0.691176474094391,
+                    0.957887828350067,
+                    1.0,
+                    1.0
+                ],
+                "metallicFactor": 0.400000005960464,
+                "roughnessFactor": 1.0
+            }
+        }
+    ],
+    "meshes": [
+        {
+            "name": "cliffBrown_waterfallTop",
+            "primitives": [
+                {
+                    "material": 0,
+                    "mode": 4,
+                    "attributes": {
+                        "NORMAL": 2,
+                        "POSITION": 1,
+                        "TEXCOORD_0": 3
+                    },
+                    "indices": 0
+                },
+                {
+                    "material": 1,
+                    "mode": 4,
+                    "attributes": {
+                        "NORMAL": 6,
+                        "POSITION": 5,
+                        "TEXCOORD_0": 7
+                    },
+                    "indices": 4
+                },
+                {
+                    "material": 2,
+                    "mode": 4,
+                    "attributes": {
+                        "NORMAL": 10,
+                        "POSITION": 9,
+                        "TEXCOORD_0": 11
+                    },
+                    "indices": 8
+                }
+            ]
+        }
+    ],
+    "nodes": [
+        {
+            "name": "RootNode",
+            "translation": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "children": [
+                1
+            ]
+        },
+        {
+            "name": "cliffBrown_waterfallTop",
+            "translation": [
+                -62.0,
+                0.0,
+                -12.0
+            ],
+            "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "scale": [
+                100.0,
+                100.0,
+                100.0
+            ],
+            "mesh": 0
+        }
+    ]
+}

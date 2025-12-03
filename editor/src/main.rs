@@ -9,7 +9,7 @@ use gltf;
 use egui::TextureHandle;
 
 mod assets;
-use assets::discover_mesh_assets;
+use assets::{convert_assets_to_glb, discover_mesh_assets};
 use wgpu::SurfaceError;
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, event::*, event_loop::EventLoop, window::WindowBuilder};
@@ -493,6 +493,7 @@ impl<'window> Renderer<'window> {
         let mut delete_entity: Option<usize> = None;
         let mut duplicate_entity: Option<usize> = None;
         let mut reload_glb: Option<String> = None;
+        let mut convert_assets: bool = false;
         let full_output = {
             let ui_state = &mut self.ui_state;
             let scene_ref: &mut Scene = scene;
@@ -788,6 +789,10 @@ impl<'window> Renderer<'window> {
                     .resizable(true)
                     .default_width(320.0)
                     .show(ctx, |ui| {
+                        if ui.button("Convert assets (copy + FBX -> GLB)").clicked() {
+                            convert_assets = true;
+                        }
+                        ui.separator();
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             for asset in &self.mesh_assets {
                                 ui.horizontal(|ui| {
@@ -836,6 +841,13 @@ impl<'window> Renderer<'window> {
                 }
             }
         }
+        if convert_assets {
+            convert_assets_to_glb("editor/3D assets", "editor/Converted assets");
+            let mut assets = discover_mesh_assets(&self.egui_ctx, "editor/3D assets");
+            assets.extend(discover_mesh_assets(&self.egui_ctx, "editor/Converted assets"));
+            self.mesh_assets = assets;
+        }
+
         if let Some(i) = duplicate_entity {
             if i < scene.entities.len() {
                 let src = &scene.entities[i];
