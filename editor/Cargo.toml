@@ -1,0 +1,20 @@
+[package]
+name = "editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+engine = { path = "../engine" }
+winit = "0.29"
+wgpu = "0.20"
+pollster = "0.3"
+env_logger = "0.11"
+log = "0.4"
+bytemuck = { version = "1.16", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+egui = "0.28"
+egui-winit = "0.28"
+egui-wgpu = "0.28"
+gltf = "1.4"
+egui-extras = { version = "0.28", features = ["image"] }
