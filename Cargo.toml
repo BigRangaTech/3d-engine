@@ -1,5 +1,4 @@
 [workspace]
-members = ["engine", "editor"]
+members = ["engine", "editor", "game"]
 
 resolver = "2"
-

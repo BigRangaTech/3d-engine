@@ -88,6 +88,7 @@ struct EditorUiState {
     glb_path: String,
     grid_snap: bool,
     grid_size: f32,
+    show_assets_window: bool,
 }
 
 struct MeshAsset {
@@ -374,6 +375,7 @@ impl<'window> Renderer<'window> {
             glb_path: default_mesh_path.to_string(),
             grid_snap: false,
             grid_size: 1.0,
+            show_assets_window: false,
         };
 
         let mesh_assets = discover_mesh_assets(&egui_ctx, "editor/3D assets");
@@ -518,43 +520,26 @@ impl<'window> Renderer<'window> {
                 if ui.button("Reload GLB").clicked() {
                     reload_glb = Some(ui_state.glb_path.clone());
                 }
+                if ui.button("Assets").clicked() {
+                    ui_state.show_assets_window = true;
+                }
 
                 ui.separator();
-                ui.label("Assets");
-                egui::ScrollArea::vertical()
-                    .max_height(200.0)
-                    .show(ui, |ui| {
-                        for asset in &self.mesh_assets {
-                            ui.horizontal(|ui| {
-                                if let Some(tex) = &asset.thumbnail {
-                                    let size = tex.size_vec2();
-                                    let scale = 64.0 / size.y.max(1.0);
-                                    let image = egui::Image::new((
-                                        tex.id(),
-                                        egui::vec2(size.x * scale, size.y * scale),
-                                    ));
-                                    ui.add(image);
-                                }
-
-                                let label = if ui_state.glb_path == asset.mesh_path {
-                                    format!("{} (selected)", asset.name)
-                                } else {
-                                    asset.name.clone()
-                                };
-
-                                if ui.button(label).clicked() {
-                                    ui_state.glb_path = asset.mesh_path.clone();
-                                    reload_glb = Some(asset.mesh_path.clone());
-                                    if let Some(sel) = ui_state.selected_entity {
-                                        if let Some(ent) = scene_ref.entities.get_mut(sel) {
-                                            ent.mesh_path = asset.mesh_path.clone();
-                                        }
-                                    }
-                                }
-                            });
-                            ui.separator();
-                        }
-                    });
+                ui.heading("Physics");
+                ui.horizontal(|ui| {
+                    ui.label("Gravity");
+                    ui.add(egui::DragValue::new(&mut scene_ref.gravity.x).speed(0.1));
+                    ui.add(egui::DragValue::new(&mut scene_ref.gravity.y).speed(0.1));
+                    ui.add(egui::DragValue::new(&mut scene_ref.gravity.z).speed(0.1));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Damping");
+                    ui.add(
+                        egui::DragValue::new(&mut scene_ref.linear_damping)
+                            .speed(0.01)
+                            .range(0.0..=5.0),
+                    );
+                });
 
                 ui.separator();
                 ui.heading("Transform helpers");
@@ -562,7 +547,7 @@ impl<'window> Renderer<'window> {
                 ui.add(
                     egui::DragValue::new(&mut ui_state.grid_size)
                         .speed(0.1)
-                        .clamp_range(0.1..=100.0)
+                        .range(0.1..=100.0)
                         .prefix("Grid size: "),
                 );
 
@@ -576,7 +561,9 @@ impl<'window> Renderer<'window> {
                         name: format!("Entity {}", index),
                         transform: engine::math::Transform::identity(),
                         velocity: Vec3::ZERO,
+                        acceleration: Vec3::ZERO,
                         mesh_path,
+                        is_character: false,
                     });
                 }
 
@@ -638,6 +625,25 @@ impl<'window> Renderer<'window> {
                             );
                         });
 
+                        ui.separator();
+                        ui.label("Selected entity physics");
+                        ui.horizontal(|ui| {
+                            ui.label("Acceleration");
+                            ui.add(
+                                egui::DragValue::new(&mut entity.acceleration.x).speed(0.1),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut entity.acceleration.y).speed(0.1),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut entity.acceleration.z).speed(0.1),
+                            );
+                        });
+                        ui.checkbox(
+                            &mut entity.is_character,
+                            "Character (no auto-spin)",
+                        );
+
                         ui.horizontal(|ui| {
                             if ui.button("Align to ground").clicked() {
                                 entity.transform.translation.y = 0.0;
@@ -656,17 +662,57 @@ impl<'window> Renderer<'window> {
 
                 ui.separator();
                 if ui.button("Save scene").clicked() {
-                    if let Err(err) = save_scene_to_file("scene.json", scene_ref) {
+                    if let Err(err) = engine::scene_io::save_scene_to_file("scene.json", scene_ref) {
                         log::error!("Failed to save scene: {}", err);
                     }
                 }
                 if ui.button("Load scene").clicked() {
-                    if let Some(new_scene) = load_scene_from_file("scene.json") {
+                    if let Some(new_scene) = engine::scene_io::load_scene_from_file("scene.json") {
                         *scene_ref = new_scene;
                         ui_state.selected_entity = None;
                     }
                 }
             });
+            if ui_state.show_assets_window {
+                egui::Window::new("Assets")
+                    .open(&mut ui_state.show_assets_window)
+                    .resizable(true)
+                    .default_width(320.0)
+                    .show(ctx, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for asset in &self.mesh_assets {
+                                ui.horizontal(|ui| {
+                                    if let Some(tex) = &asset.thumbnail {
+                                        let size = tex.size_vec2();
+                                        let scale = 64.0 / size.y.max(1.0);
+                                        let image = egui::Image::new((
+                                            tex.id(),
+                                            egui::vec2(size.x * scale, size.y * scale),
+                                        ));
+                                        ui.add(image);
+                                    }
+
+                                    let label = if ui_state.glb_path == asset.mesh_path {
+                                        format!("{} (selected)", asset.name)
+                                    } else {
+                                        asset.name.clone()
+                                    };
+
+                                    if ui.button(label).clicked() {
+                                        ui_state.glb_path = asset.mesh_path.clone();
+                                        reload_glb = Some(asset.mesh_path.clone());
+                                        if let Some(sel) = ui_state.selected_entity {
+                                            if let Some(ent) = scene_ref.entities.get_mut(sel) {
+                                                ent.mesh_path = asset.mesh_path.clone();
+                                            }
+                                        }
+                                    }
+                                });
+                                ui.separator();
+                            }
+                        });
+                    });
+            }
             })
         };
         if let Some(i) = delete_entity {
@@ -692,7 +738,9 @@ impl<'window> Renderer<'window> {
                         scale: src.transform.scale,
                     },
                     velocity: Vec3::ZERO,
+                    acceleration: Vec3::ZERO,
                     mesh_path: src.mesh_path.clone(),
+                    is_character: src.is_character,
                 });
                 self.ui_state.selected_entity = Some(scene.entities.len() - 1);
             }
@@ -969,9 +1017,13 @@ fn main() {
             name: "Entity 0".to_string(),
             transform: engine::math::Transform::identity(),
             velocity: Vec3::ZERO,
+            acceleration: Vec3::ZERO,
             mesh_path: "editor/3D assets/Weapon Pack/Models/GLTF format/pistol.glb".to_string(),
+            is_character: false,
         }],
         camera,
+        gravity: Vec3::new(0.0, -9.81, 0.0),
+        linear_damping: 0.2,
     };
 
     let mut engine = Engine::new(scene);
@@ -984,9 +1036,14 @@ fn main() {
         .run(move |event, elwt| {
             match event {
                 Event::WindowEvent { event, window_id } if window_id == window.id() => {
-                    renderer
+                    let response = renderer
                         .egui_winit
                         .on_window_event(window, &event);
+
+                    // If egui wants to capture this event, don't also feed it to our input.
+                    if response.consumed {
+                        return;
+                    }
 
                     match event {
                         WindowEvent::CloseRequested => {
@@ -1445,122 +1502,4 @@ fn load_mesh_from_stl(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SerializableTransform {
-    translation: [f32; 3],
-    rotation: [f32; 4],
-    scale: [f32; 3],
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SerializableEntity {
-    name: String,
-    transform: SerializableTransform,
-    velocity: [f32; 3],
-    mesh_path: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SerializableCamera {
-    position: [f32; 3],
-    target: [f32; 3],
-    up: [f32; 3],
-    fov_y_radians: f32,
-    aspect: f32,
-    z_near: f32,
-    z_far: f32,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SerializableScene {
-    entities: Vec<SerializableEntity>,
-    camera: SerializableCamera,
-}
-
-fn save_scene_to_file(path: &str, scene: &Scene) -> Result<(), String> {
-    use std::fs;
-    use std::path::Path;
-
-    let serializable = scene_to_serializable(scene);
-    let json = serde_json::to_string_pretty(&serializable)
-        .map_err(|e| format!("serialize error: {e}"))?;
-    fs::write(Path::new(path), json).map_err(|e| format!("write error: {e}"))?;
-    Ok(())
-}
-
-fn load_scene_from_file(path: &str) -> Option<Scene> {
-    use std::fs;
-    use std::path::Path;
-
-    let data = fs::read_to_string(Path::new(path)).ok()?;
-    let serializable: SerializableScene = serde_json::from_str(&data).ok()?;
-    Some(serializable_to_scene(&serializable))
-}
-
-fn scene_to_serializable(scene: &Scene) -> SerializableScene {
-    let entities = scene
-        .entities
-        .iter()
-        .map(|e| SerializableEntity {
-            name: e.name.clone(),
-            transform: SerializableTransform {
-                translation: e.transform.translation.to_array(),
-                rotation: {
-                    let q = e.transform.rotation;
-                    [q.x, q.y, q.z, q.w]
-                },
-                scale: e.transform.scale.to_array(),
-            },
-            velocity: e.velocity.to_array(),
-            mesh_path: e.mesh_path.clone(),
-        })
-        .collect();
-
-    let cam = &scene.camera;
-    let camera = SerializableCamera {
-        position: cam.position.to_array(),
-        target: cam.target.to_array(),
-        up: cam.up.to_array(),
-        fov_y_radians: cam.fov_y_radians,
-        aspect: cam.aspect,
-        z_near: cam.z_near,
-        z_far: cam.z_far,
-    };
-
-    SerializableScene { entities, camera }
-}
-
-fn serializable_to_scene(data: &SerializableScene) -> Scene {
-    let entities = data
-        .entities
-        .iter()
-        .map(|e| engine::Entity {
-            name: e.name.clone(),
-            transform: engine::math::Transform {
-                translation: Vec3::from_array(e.transform.translation),
-                rotation: Quat::from_xyzw(
-                    e.transform.rotation[0],
-                    e.transform.rotation[1],
-                    e.transform.rotation[2],
-                    e.transform.rotation[3],
-                ),
-                scale: Vec3::from_array(e.transform.scale),
-            },
-            velocity: Vec3::from_array(e.velocity),
-            mesh_path: e.mesh_path.clone(),
-        })
-        .collect();
-
-    let cam = &data.camera;
-    let camera = Camera {
-        position: Vec3::from_array(cam.position),
-        target: Vec3::from_array(cam.target),
-        up: Vec3::from_array(cam.up),
-        fov_y_radians: cam.fov_y_radians,
-        aspect: cam.aspect,
-        z_near: cam.z_near,
-        z_far: cam.z_far,
-    };
-
-    Scene { entities, camera }
-}
+// Scene save/load lives in the engine crate now (engine::scene_io).
