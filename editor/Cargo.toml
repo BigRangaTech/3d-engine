@@ -17,4 +17,6 @@ egui = "0.28"
 egui-winit = "0.28"
 egui-wgpu = "0.28"
 gltf = "1.4"
-egui-extras = { version = "0.28", features = ["image"] }
+tobj = "4"
+stl_io = "0.4"
+image = { version = "0.24", default-features = false, features = ["png"] }

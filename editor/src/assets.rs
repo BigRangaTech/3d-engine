@@ -1,80 +1,106 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use egui_extras::RetainedImage;
+use image::io::Reader as ImageReader;
+use image::ImageFormat;
+
+use egui::{ColorImage, Context as EguiContext, TextureHandle, TextureOptions};
 
 use crate::MeshAsset;
 
-pub fn discover_mesh_assets(root: &str) -> Vec<MeshAsset> {
+const MAX_MESH_ASSETS: usize = 512;
+const MAX_THUMBNAILS: usize = 128;
+
+pub fn discover_mesh_assets(ctx: &EguiContext, root: &str) -> Vec<MeshAsset> {
     let mut result = Vec::new();
     let root_path = Path::new(root);
-    let entries = match fs::read_dir(root_path) {
+    let mut thumbs_loaded = 0usize;
+    collect_mesh_assets(ctx, root_path, root_path, &mut result, &mut thumbs_loaded);
+    result
+}
+
+fn is_mesh_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            let ext = ext.to_ascii_lowercase();
+            ext == "glb" || ext == "gltf" || ext == "obj" || ext == "stl"
+        })
+        .unwrap_or(false)
+}
+
+fn collect_mesh_assets(
+    ctx: &EguiContext,
+    dir: &Path,
+    root: &Path,
+    out: &mut Vec<MeshAsset>,
+    thumbs_loaded: &mut usize,
+) {
+    if out.len() >= MAX_MESH_ASSETS {
+        return;
+    }
+
+    let entries = match fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return result,
+        Err(_) => return,
     };
 
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
+        if out.len() >= MAX_MESH_ASSETS {
+            break;
         }
 
-        let name = entry
-            .file_name()
-            .to_string_lossy()
-            .to_string();
+        let path = entry.path();
+        if path.is_dir() {
+            // Skip obviously non-mesh-heavy folders to keep startup fast on large packs.
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                let lower = name.to_ascii_lowercase();
+                if lower == "textures"
+                    || lower == "texture"
+                    || lower == "preview"
+                    || lower == "previews"
+                    || lower == "source"
+                    || lower == "sources"
+                    || lower == "animations"
+                    || lower == "skins"
+                {
+                    continue;
+                }
+            }
+            collect_mesh_assets(ctx, &path, root, out, thumbs_loaded);
+        } else if is_mesh_file(&path) {
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            let name = rel.to_string_lossy().to_string();
 
-        if let Some(glb_path) = find_first_glb(&path) {
-            let thumbnail = find_preview_image(&path)
-                .and_then(|img_path| fs::read(&img_path).ok())
-                .and_then(|bytes| {
-                    RetainedImage::from_image_bytes(
-                        img_path.to_string_lossy(),
-                        &bytes,
-                    )
-                    .ok()
-                });
+            let thumbnail = if *thumbs_loaded < MAX_THUMBNAILS {
+                let tex = find_preview_image_for_mesh(&path, root)
+                    .and_then(|img_path| load_texture_from_png(ctx, &img_path).ok());
+                if tex.is_some() {
+                    *thumbs_loaded += 1;
+                }
+                tex
+            } else {
+                None
+            };
 
-            result.push(MeshAsset {
+            out.push(MeshAsset {
                 name,
-                glb_path: glb_path.to_string_lossy().to_string(),
+                mesh_path: path.to_string_lossy().to_string(),
                 thumbnail,
             });
         }
     }
-
-    result
-}
-
-fn find_first_glb(dir: &Path) -> Option<PathBuf> {
-    let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(found) = find_first_glb(&path) {
-                return Some(found);
-            }
-        } else if path
-            .extension()
-            .map(|ext| ext.eq_ignore_ascii_case("glb"))
-            .unwrap_or(false)
-        {
-            return Some(path);
-        }
-    }
-    None
 }
 
 fn find_preview_image(dir: &Path) -> Option<PathBuf> {
-    // Prefer a file literally named Preview.png, otherwise the first .png found.
-    let mut candidate: Option<PathBuf> = None;
+    // Prefer a file literally named Preview.png in this directory,
+    // otherwise the first .png found in this directory.
     let entries = fs::read_dir(dir).ok()?;
+
+    let mut first_png: Option<PathBuf> = None;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if candidate.is_none() {
-                candidate = find_preview_image(&path);
-            }
             continue;
         }
 
@@ -89,12 +115,42 @@ fn find_preview_image(dir: &Path) -> Option<PathBuf> {
             .map(|ext| ext.eq_ignore_ascii_case("png"))
             .unwrap_or(false)
         {
-            if candidate.is_none() {
-                candidate = Some(path);
+            if first_png.is_none() {
+                first_png = Some(path);
             }
         }
     }
 
-    candidate
+    first_png
 }
 
+fn find_preview_image_for_mesh(mesh_path: &Path, root: &Path) -> Option<PathBuf> {
+    // Walk up the directory tree from the mesh file's directory toward the
+    // asset root, looking for a suitable preview image in each directory.
+    let mut current = mesh_path.parent();
+    while let Some(dir) = current {
+        if let Some(img) = find_preview_image(dir) {
+            return Some(img);
+        }
+        if dir == root {
+            break;
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn load_texture_from_png(ctx: &EguiContext, path: &Path) -> Result<TextureHandle, String> {
+    let file = fs::File::open(path).map_err(|e| format!("open error: {e}"))?;
+    let mut reader = ImageReader::new(std::io::BufReader::new(file));
+    reader.set_format(ImageFormat::Png);
+    let image = reader.decode().map_err(|e| format!("decode error: {e}"))?;
+    let size = [image.width() as usize, image.height() as usize];
+    let rgba = image.into_rgba8();
+    let color_image = ColorImage::from_rgba_unmultiplied(size, &rgba);
+    Ok(ctx.load_texture(
+        path.to_string_lossy(),
+        color_image,
+        TextureOptions::LINEAR,
+    ))
+}

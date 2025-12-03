@@ -6,6 +6,7 @@ pub struct Entity {
     pub name: String,
     pub transform: Transform,
     pub velocity: Vec3,
+    pub mesh_path: String,
 }
 
 pub struct Scene {

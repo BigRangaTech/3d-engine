@@ -1,11 +1,12 @@
 use std::time::Instant;
+use std::collections::HashMap;
 
 use engine::{Engine, Scene};
 use engine::math::{Camera, Vec3, Quat};
 use log::info;
 use serde::Deserialize;
 use gltf;
-use egui_extras::RetainedImage;
+use egui::TextureHandle;
 
 mod assets;
 use assets::discover_mesh_assets;
@@ -72,6 +73,8 @@ struct InputState {
     move_right: bool,
     move_up: bool,
     move_down: bool,
+    rotate_button_held: bool,
+    last_cursor_pos: Option<(f64, f64)>,
 }
 
 #[derive(Default)]
@@ -83,12 +86,20 @@ struct EditorUiState {
     invert_light: bool,
     selected_entity: Option<usize>,
     glb_path: String,
+    grid_snap: bool,
+    grid_size: f32,
 }
 
 struct MeshAsset {
     name: String,
-    glb_path: String,
-    thumbnail: Option<RetainedImage>,
+    mesh_path: String,
+    thumbnail: Option<TextureHandle>,
+}
+
+struct GpuMesh {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    num_indices: u32,
 }
 
 #[derive(Deserialize)]
@@ -109,9 +120,6 @@ struct Renderer<'window> {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    num_indices: u32,
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
     depth_format: wgpu::TextureFormat,
@@ -123,6 +131,8 @@ struct Renderer<'window> {
     egui_renderer: EguiRenderer,
     ui_state: EditorUiState,
     mesh_assets: Vec<MeshAsset>,
+    mesh_cache: HashMap<String, GpuMesh>,
+    ground_mesh: GpuMesh,
 }
 
 impl<'window> Renderer<'window> {
@@ -176,23 +186,25 @@ impl<'window> Renderer<'window> {
 
         surface.configure(&device, &config);
 
-        // Try to load mesh from GLB assets, then JSON, fall back to a built-in cube.
-        let default_glb = "editor/3D assets/Weapon Pack/Models/GLTF format/pistol.glb";
-        let (vertices, indices) = load_mesh_from_glb(default_glb)
+        // Load default mesh into cache (used when an entity has an empty mesh_path).
+        let default_mesh_path = "editor/3D assets/Weapon Pack/Models/GLTF format/pistol.glb";
+        let (vertices, indices) = load_mesh_from_any(default_mesh_path)
             .or_else(|| load_mesh_from_json("assets/cube.json"))
             .unwrap_or_else(builtin_cube_mesh);
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cube Vertex Buffer"),
-            contents: bytemuck::cast_slice(vertices.as_slice()),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cube Index Buffer"),
-            contents: bytemuck::cast_slice(indices.as_slice()),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let default_mesh = GpuMesh {
+            vertex_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Default Mesh Vertex Buffer"),
+                contents: bytemuck::cast_slice(vertices.as_slice()),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            index_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Default Mesh Index Buffer"),
+                contents: bytemuck::cast_slice(indices.as_slice()),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+            num_indices: indices.len() as u32,
+        };
 
         let depth_format = wgpu::TextureFormat::Depth32Float;
         let (depth_texture, depth_view) = Self::create_depth_resources(&device, &config, depth_format);
@@ -359,10 +371,54 @@ impl<'window> Renderer<'window> {
             shininess: 16.0,
             invert_light: false,
             selected_entity: None,
-            glb_path: "editor/3D assets/Weapon Pack/Models/GLTF format/pistol.glb".to_string(),
+            glb_path: default_mesh_path.to_string(),
+            grid_snap: false,
+            grid_size: 1.0,
         };
 
-        let mesh_assets = discover_mesh_assets("editor/3D assets");
+        let mesh_assets = discover_mesh_assets(&egui_ctx, "editor/3D assets");
+
+        // Create a large ground plane mesh (endless-looking).
+        let ground_half_size = 1000.0_f32;
+        let ground_vertices = [
+            Vertex {
+                position: [-ground_half_size, 0.0, -ground_half_size],
+                normal: [0.0, 1.0, 0.0],
+                color: [0.3, 0.3, 0.3],
+            },
+            Vertex {
+                position: [ground_half_size, 0.0, -ground_half_size],
+                normal: [0.0, 1.0, 0.0],
+                color: [0.3, 0.3, 0.3],
+            },
+            Vertex {
+                position: [ground_half_size, 0.0, ground_half_size],
+                normal: [0.0, 1.0, 0.0],
+                color: [0.3, 0.3, 0.3],
+            },
+            Vertex {
+                position: [-ground_half_size, 0.0, ground_half_size],
+                normal: [0.0, 1.0, 0.0],
+                color: [0.3, 0.3, 0.3],
+            },
+        ];
+        let ground_indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
+        let ground_mesh = GpuMesh {
+            vertex_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Ground Vertex Buffer"),
+                contents: bytemuck::cast_slice(&ground_vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            index_buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Ground Index Buffer"),
+                contents: bytemuck::cast_slice(&ground_indices),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+            num_indices: ground_indices.len() as u32,
+        };
+
+        let mut mesh_cache = HashMap::new();
+        mesh_cache.insert(default_mesh_path.to_string(), default_mesh);
 
         Self {
             surface,
@@ -370,9 +426,6 @@ impl<'window> Renderer<'window> {
             queue,
             config,
             render_pipeline,
-            vertex_buffer,
-            index_buffer,
-            num_indices: indices.len() as u32,
             depth_texture,
             depth_view,
             depth_format,
@@ -384,6 +437,8 @@ impl<'window> Renderer<'window> {
             egui_renderer,
             ui_state,
             mesh_assets,
+            mesh_cache,
+            ground_mesh,
         }
     }
 
@@ -428,6 +483,7 @@ impl<'window> Renderer<'window> {
         // Build editor UI with egui.
         let raw_input = self.egui_winit.take_egui_input(self.window);
         let mut delete_entity: Option<usize> = None;
+        let mut duplicate_entity: Option<usize> = None;
         let mut reload_glb: Option<String> = None;
         let full_output = {
             let ui_state = &mut self.ui_state;
@@ -444,7 +500,10 @@ impl<'window> Renderer<'window> {
                 ));
             });
 
-            egui::SidePanel::left("left_panel").show(ctx, |ui| {
+            egui::SidePanel::left("left_panel")
+                .resizable(true)
+                .default_width(260.0)
+                .show(ctx, |ui| {
                 ui.heading("Controls");
                 ui.checkbox(&mut ui_state.paused, "Pause simulation");
                 ui.checkbox(&mut ui_state.invert_light, "Invert light");
@@ -467,21 +526,30 @@ impl<'window> Renderer<'window> {
                     .show(ui, |ui| {
                         for asset in &self.mesh_assets {
                             ui.horizontal(|ui| {
-                                if let Some(image) = &asset.thumbnail {
-                                    let size = image.size_vec2();
+                                if let Some(tex) = &asset.thumbnail {
+                                    let size = tex.size_vec2();
                                     let scale = 64.0 / size.y.max(1.0);
-                                    image.show_scaled(ui, scale);
+                                    let image = egui::Image::new((
+                                        tex.id(),
+                                        egui::vec2(size.x * scale, size.y * scale),
+                                    ));
+                                    ui.add(image);
                                 }
 
-                                let label = if ui_state.glb_path == asset.glb_path {
+                                let label = if ui_state.glb_path == asset.mesh_path {
                                     format!("{} (selected)", asset.name)
                                 } else {
                                     asset.name.clone()
                                 };
 
                                 if ui.button(label).clicked() {
-                                    ui_state.glb_path = asset.glb_path.clone();
-                                    reload_glb = Some(asset.glb_path.clone());
+                                    ui_state.glb_path = asset.mesh_path.clone();
+                                    reload_glb = Some(asset.mesh_path.clone());
+                                    if let Some(sel) = ui_state.selected_entity {
+                                        if let Some(ent) = scene_ref.entities.get_mut(sel) {
+                                            ent.mesh_path = asset.mesh_path.clone();
+                                        }
+                                    }
                                 }
                             });
                             ui.separator();
@@ -489,14 +557,26 @@ impl<'window> Renderer<'window> {
                     });
 
                 ui.separator();
+                ui.heading("Transform helpers");
+                ui.checkbox(&mut ui_state.grid_snap, "Snap to grid");
+                ui.add(
+                    egui::DragValue::new(&mut ui_state.grid_size)
+                        .speed(0.1)
+                        .clamp_range(0.1..=100.0)
+                        .prefix("Grid size: "),
+                );
+
+                ui.separator();
                 ui.heading("Entities");
 
                 if ui.button("Add entity").clicked() {
                     let index = scene_ref.entities.len();
+                    let mesh_path = ui_state.glb_path.clone();
                     scene_ref.entities.push(engine::Entity {
                         name: format!("Entity {}", index),
                         transform: engine::math::Transform::identity(),
                         velocity: Vec3::ZERO,
+                        mesh_path,
                     });
                 }
 
@@ -518,20 +598,57 @@ impl<'window> Renderer<'window> {
                         ui.label("Selected entity transform");
                         ui.horizontal(|ui| {
                             ui.label("Position");
-                            ui.add(egui::DragValue::new(&mut entity.transform.translation.x).speed(0.1));
-                            ui.add(egui::DragValue::new(&mut entity.transform.translation.y).speed(0.1));
-                            ui.add(egui::DragValue::new(&mut entity.transform.translation.z).speed(0.1));
+                            let resp_x = ui.add(
+                                egui::DragValue::new(&mut entity.transform.translation.x)
+                                    .speed(0.1),
+                            );
+                            let resp_y = ui.add(
+                                egui::DragValue::new(&mut entity.transform.translation.y)
+                                    .speed(0.1),
+                            );
+                            let resp_z = ui.add(
+                                egui::DragValue::new(&mut entity.transform.translation.z)
+                                    .speed(0.1),
+                            );
+                            if ui_state.grid_snap && ui_state.grid_size > 0.0 {
+                                let snap = |v: &mut f32, step: f32| {
+                                    *v = (*v / step).round() * step;
+                                };
+                                if resp_x.changed() {
+                                    snap(&mut entity.transform.translation.x, ui_state.grid_size);
+                                }
+                                if resp_y.changed() {
+                                    snap(&mut entity.transform.translation.y, ui_state.grid_size);
+                                }
+                                if resp_z.changed() {
+                                    snap(&mut entity.transform.translation.z, ui_state.grid_size);
+                                }
+                            }
                         });
                         ui.horizontal(|ui| {
                             ui.label("Scale");
-                            ui.add(egui::DragValue::new(&mut entity.transform.scale.x).speed(0.1));
-                            ui.add(egui::DragValue::new(&mut entity.transform.scale.y).speed(0.1));
-                            ui.add(egui::DragValue::new(&mut entity.transform.scale.z).speed(0.1));
+                            ui.add(
+                                egui::DragValue::new(&mut entity.transform.scale.x).speed(0.1),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut entity.transform.scale.y).speed(0.1),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut entity.transform.scale.z).speed(0.1),
+                            );
                         });
 
-                        if ui.button("Delete entity").clicked() {
-                            delete_entity = Some(i);
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Align to ground").clicked() {
+                                entity.transform.translation.y = 0.0;
+                            }
+                            if ui.button("Duplicate").clicked() {
+                                duplicate_entity = Some(i);
+                            }
+                            if ui.button("Delete").clicked() {
+                                delete_entity = Some(i);
+                            }
+                        });
                     } else {
                         ui_state.selected_entity = None;
                     }
@@ -564,72 +681,116 @@ impl<'window> Renderer<'window> {
                 }
             }
         }
+        if let Some(i) = duplicate_entity {
+            if i < scene.entities.len() {
+                let src = &scene.entities[i];
+                scene.entities.push(engine::Entity {
+                    name: format!("{} Copy", src.name),
+                    transform: engine::math::Transform {
+                        translation: src.transform.translation,
+                        rotation: src.transform.rotation,
+                        scale: src.transform.scale,
+                    },
+                    velocity: Vec3::ZERO,
+                    mesh_path: src.mesh_path.clone(),
+                });
+                self.ui_state.selected_entity = Some(scene.entities.len() - 1);
+            }
+        }
 
         if let Some(path) = reload_glb {
-            if let Some((vertices, indices)) = load_mesh_from_glb(&path) {
-                self.vertex_buffer = self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("GLB Vertex Buffer"),
-                        contents: bytemuck::cast_slice(vertices.as_slice()),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    },
-                );
-                self.index_buffer = self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("GLB Index Buffer"),
-                        contents: bytemuck::cast_slice(indices.as_slice()),
-                        usage: wgpu::BufferUsages::INDEX,
-                    },
-                );
-                self.num_indices = indices.len() as u32;
+            if let Some((vertices, indices)) = load_mesh_from_any(&path) {
+                let mesh = GpuMesh {
+                    vertex_buffer: self
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Asset Vertex Buffer"),
+                            contents: bytemuck::cast_slice(vertices.as_slice()),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        }),
+                    index_buffer: self
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Asset Index Buffer"),
+                            contents: bytemuck::cast_slice(indices.as_slice()),
+                            usage: wgpu::BufferUsages::INDEX,
+                        }),
+                    num_indices: indices.len() as u32,
+                };
+                self.mesh_cache.insert(path.clone(), mesh);
             } else {
-                log::error!("Failed to load GLB mesh from '{}'", path);
+                log::error!("Failed to load mesh from '{}'", path);
             }
         }
         self.egui_winit
             .handle_platform_output(self.window, full_output.platform_output);
 
-        let paint_jobs = self
-            .egui_ctx
-            .tessellate(full_output.shapes, 1.0);
+        let paint_jobs = self.egui_ctx.tessellate(full_output.shapes, 1.0);
         let screen_desc = ScreenDescriptor {
             size_in_pixels: [self.config.width, self.config.height],
             pixels_per_point: 1.0,
         };
 
-        // Update camera uniform from engine scene and UI-controlled material/light.
-        let ui_state = &self.ui_state;
+        // Snapshot UI parameters we need for rendering so we don't hold long-lived borrows.
+        let invert_light = self.ui_state.invert_light;
+        let ambient = self.ui_state.ambient;
+        let specular = self.ui_state.specular;
+        let shininess = self.ui_state.shininess;
+        let default_mesh_path = self.ui_state.glb_path.clone();
+
         let camera = &scene.camera;
         let view_proj = camera.view_projection_matrix();
-        let model = scene
-            .entities
-            .first()
-            .map(|e| e.transform.matrix())
-            .unwrap_or_else(|| engine::math::Mat4::IDENTITY);
-        let mvp = view_proj * model;
 
         let mut light_dir = Vec3::new(-1.0, -1.0, -0.5).normalize();
-        if ui_state.invert_light {
+        if invert_light {
             light_dir = -light_dir;
         }
-        let ambient_color = [ui_state.ambient; 3];
-        let specular_color = [ui_state.specular; 3];
+        let ambient_color = [ambient; 3];
+        let specular_color = [specular; 3];
 
-        let camera_uniform = CameraUniform {
-            mvp: mvp.to_cols_array_2d(),
-            model: model.to_cols_array_2d(),
-            light_dir: light_dir.to_array(),
-            _pad0: 0.0,
-            ambient_color,
-            _pad1: 0.0,
-            specular_color,
-            shininess: ui_state.shininess,
-        };
-        self.queue.write_buffer(
-            &self.camera_buffer,
-            0,
-            bytemuck::bytes_of(&camera_uniform),
-        );
+        // Ensure all meshes referenced by entities are loaded into the cache
+        // before we start the render pass to avoid mutable/immutable borrow conflicts.
+        {
+            let mut keys_to_load: Vec<String> = Vec::new();
+            for entity in &scene.entities {
+                let mesh_key = if entity.mesh_path.is_empty() {
+                    default_mesh_path.clone()
+                } else {
+                    entity.mesh_path.clone()
+                };
+                if !self.mesh_cache.contains_key(&mesh_key) {
+                    keys_to_load.push(mesh_key);
+                }
+            }
+
+            for mesh_key in keys_to_load {
+                if let Some((verts, inds)) = load_mesh_from_any(&mesh_key) {
+                    let mesh = GpuMesh {
+                        vertex_buffer: self.device.create_buffer_init(
+                            &wgpu::util::BufferInitDescriptor {
+                                label: Some("Entity Vertex Buffer"),
+                                contents: bytemuck::cast_slice(verts.as_slice()),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            },
+                        ),
+                        index_buffer: self.device.create_buffer_init(
+                            &wgpu::util::BufferInitDescriptor {
+                                label: Some("Entity Index Buffer"),
+                                contents: bytemuck::cast_slice(inds.as_slice()),
+                                usage: wgpu::BufferUsages::INDEX,
+                            },
+                        ),
+                        num_indices: inds.len() as u32,
+                    };
+                    self.mesh_cache.insert(mesh_key.clone(), mesh);
+                } else {
+                    log::error!(
+                        "Failed to load mesh for one or more entities from '{}'",
+                        mesh_key
+                    );
+                }
+            }
+        }
 
         let output = self.surface.get_current_texture()?;
         let view = output
@@ -672,10 +833,72 @@ impl<'window> Renderer<'window> {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass
-                .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            // Draw ground plane.
+            {
+                let model = engine::math::Mat4::IDENTITY;
+                let mvp = view_proj * model;
+                let camera_uniform = CameraUniform {
+                    mvp: mvp.to_cols_array_2d(),
+                    model: model.to_cols_array_2d(),
+                    light_dir: light_dir.to_array(),
+                    _pad0: 0.0,
+                    ambient_color,
+                    _pad1: 0.0,
+                    specular_color,
+                    shininess,
+                };
+                self.queue.write_buffer(
+                    &self.camera_buffer,
+                    0,
+                    bytemuck::bytes_of(&camera_uniform),
+                );
+
+                render_pass.set_vertex_buffer(0, self.ground_mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    self.ground_mesh.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                render_pass.draw_indexed(0..self.ground_mesh.num_indices, 0, 0..1);
+            }
+
+            // Draw each entity with its mesh.
+            for entity in &scene.entities {
+                let mesh_key = if entity.mesh_path.is_empty() {
+                    default_mesh_path.clone()
+                } else {
+                    entity.mesh_path.clone()
+                };
+
+                let mesh = match self.mesh_cache.get(&mesh_key) {
+                    Some(m) => m,
+                    None => continue,
+                };
+
+                let model = entity.transform.matrix();
+                let mvp = view_proj * model;
+                let camera_uniform = CameraUniform {
+                    mvp: mvp.to_cols_array_2d(),
+                    model: model.to_cols_array_2d(),
+                    light_dir: light_dir.to_array(),
+                    _pad0: 0.0,
+                    ambient_color,
+                    _pad1: 0.0,
+                    specular_color,
+                    shininess,
+                };
+                self.queue.write_buffer(
+                    &self.camera_buffer,
+                    0,
+                    bytemuck::bytes_of(&camera_uniform),
+                );
+
+                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    mesh.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
+            }
         }
 
         // Upload egui data and render UI on top.
@@ -746,6 +969,7 @@ fn main() {
             name: "Entity 0".to_string(),
             transform: engine::math::Transform::identity(),
             velocity: Vec3::ZERO,
+            mesh_path: "editor/3D assets/Weapon Pack/Models/GLTF format/pistol.glb".to_string(),
         }],
         camera,
     };
@@ -786,6 +1010,36 @@ fn main() {
                                     elwt.exit();
                                 }
                                 _ => {}
+                            }
+                        }
+                        WindowEvent::MouseInput { state, button, .. } => {
+                            if button == winit::event::MouseButton::Right {
+                                let pressed = state == winit::event::ElementState::Pressed;
+                                input.rotate_button_held = pressed;
+                                if pressed {
+                                    input.last_cursor_pos = None;
+                                }
+                            }
+                        }
+                        WindowEvent::CursorMoved { position, .. } => {
+                            if input.rotate_button_held {
+                                if let Some((lx, ly)) = input.last_cursor_pos {
+                                    let dx = position.x - lx;
+                                    let dy = position.y - ly;
+                                    rotate_camera_from_mouse(&mut engine.scene.camera, dx as f32, dy as f32);
+                                }
+                                input.last_cursor_pos = Some((position.x, position.y));
+                            } else {
+                                input.last_cursor_pos = Some((position.x, position.y));
+                            }
+                        }
+                        WindowEvent::MouseWheel { delta, .. } => {
+                            let scroll = match delta {
+                                winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                                winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
+                            };
+                            if scroll.abs() > 0.0 {
+                                zoom_camera_along_view(&mut engine.scene.camera, scroll);
                             }
                         }
                         WindowEvent::Resized(size) => {
@@ -870,6 +1124,41 @@ fn update_camera_from_input(camera: &mut Camera, input: &InputState, dt: f32) {
     }
 }
 
+fn rotate_camera_from_mouse(camera: &mut Camera, dx: f32, dy: f32) {
+    let sensitivity = 0.005;
+    let yaw = -dx * sensitivity;
+    let pitch = -dy * sensitivity;
+
+    let forward = camera.target - camera.position;
+    let radius = forward.length();
+    if radius <= 0.0001 {
+        return;
+    }
+
+    let mut dir = forward.normalize();
+
+    // Yaw around the global up axis.
+    let yaw_rot = Quat::from_rotation_y(yaw);
+    dir = yaw_rot * dir;
+
+    // Pitch around the camera's right axis.
+    let right = dir.cross(camera.up).normalize();
+    let pitch_rot = Quat::from_axis_angle(right, pitch);
+    dir = pitch_rot * dir;
+
+    camera.target = camera.position + dir * radius;
+}
+
+fn zoom_camera_along_view(camera: &mut Camera, scroll: f32) {
+    let forward = camera.target - camera.position;
+    if forward.length_squared() == 0.0 {
+        return;
+    }
+    let dir = forward.normalize();
+    let amount = scroll * 0.5;
+    camera.position += dir * amount;
+}
+
 fn load_mesh_from_json(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
     use std::fs;
     use std::path::Path;
@@ -950,6 +1239,21 @@ fn builtin_cube_mesh() -> (Vec<Vertex>, Vec<u32>) {
     (vertices, indices)
 }
 
+fn load_mesh_from_any(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".glb") {
+        load_mesh_from_glb(path)
+    } else if lower.ends_with(".gltf") {
+        load_mesh_from_gltf(path)
+    } else if lower.ends_with(".obj") {
+        load_mesh_from_obj(path)
+    } else if lower.ends_with(".stl") {
+        load_mesh_from_stl(path)
+    } else {
+        None
+    }
+}
+
 fn load_mesh_from_glb(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
     use std::fs;
     use std::path::Path;
@@ -1005,6 +1309,142 @@ fn load_mesh_from_glb(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
     Some((vertices, indices))
 }
 
+fn load_mesh_from_gltf(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
+    let (document, buffers, _images) = gltf::import(path).ok()?;
+
+    let mesh = document.meshes().next()?;
+    let primitive = mesh.primitives().next()?;
+
+    let reader = primitive.reader(|buffer| {
+        buffers
+            .get(buffer.index())
+            .map(|b| b.0.as_slice())
+    });
+
+    let positions: Vec<[f32; 3]> = reader.read_positions()?.collect();
+
+    let normals: Vec<[f32; 3]> = if let Some(normals_iter) = reader.read_normals() {
+        normals_iter.collect()
+    } else {
+        vec![[0.0, 1.0, 0.0]; positions.len()]
+    };
+
+    let colors: Vec<[f32; 3]> = if let Some(colors0) = reader.read_colors(0) {
+        colors0
+            .into_rgb_f32()
+            .collect()
+    } else {
+        vec![[1.0, 1.0, 1.0]; positions.len()]
+    };
+
+    let mut vertices = Vec::with_capacity(positions.len());
+    for i in 0..positions.len() {
+        vertices.push(Vertex {
+            position: positions[i],
+            normal: normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]),
+            color: colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0]),
+        });
+    }
+
+    let indices: Vec<u32> = if let Some(indices) = reader.read_indices() {
+        use gltf::mesh::util::ReadIndices;
+        match indices {
+            ReadIndices::U8(iter) => iter.map(|i| i as u32).collect(),
+            ReadIndices::U16(iter) => iter.map(|i| i as u32).collect(),
+            ReadIndices::U32(iter) => iter.collect(),
+        }
+    } else {
+        (0..positions.len() as u32).collect()
+    };
+
+    Some((vertices, indices))
+}
+
+fn load_mesh_from_obj(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
+    use std::path::Path;
+
+    let path = Path::new(path);
+    let (models, _materials) = tobj::load_obj(
+        path,
+        &tobj::LoadOptions {
+            triangulate: true,
+            single_index: true,
+            ..Default::default()
+        },
+    )
+    .ok()?;
+
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    for m in models {
+        let mesh = m.mesh;
+        let positions = mesh.positions;
+        let normals = mesh.normals;
+
+        let num_verts = positions.len() / 3;
+        for i in 0..num_verts {
+            let px = positions[i * 3] as f32;
+            let py = positions[i * 3 + 1] as f32;
+            let pz = positions[i * 3 + 2] as f32;
+            let (nx, ny, nz) = if normals.len() >= (i + 1) * 3 {
+                (
+                    normals[i * 3] as f32,
+                    normals[i * 3 + 1] as f32,
+                    normals[i * 3 + 2] as f32,
+                )
+            } else {
+                (0.0, 1.0, 0.0)
+            };
+
+            vertices.push(Vertex {
+                position: [px, py, pz],
+                normal: [nx, ny, nz],
+                color: [1.0, 1.0, 1.0],
+            });
+        }
+
+        indices.extend(mesh.indices.into_iter().map(|i| i as u32));
+    }
+
+    if vertices.is_empty() || indices.is_empty() {
+        None
+    } else {
+        Some((vertices, indices))
+    }
+}
+
+fn load_mesh_from_stl(path: &str) -> Option<(Vec<Vertex>, Vec<u32>)> {
+    use std::fs::File;
+    use std::path::Path;
+
+    let mut file = File::open(Path::new(path)).ok()?;
+    let stl = stl_io::read_stl(&mut file).ok()?;
+
+    let raw_vertices = stl.vertices;
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for face in stl.faces {
+        let normal = face.normal;
+        let base_index = vertices.len() as u32;
+        for &vi in &face.vertices {
+            let v = raw_vertices[vi];
+            vertices.push(Vertex {
+                position: [v[0] as f32, v[1] as f32, v[2] as f32],
+                normal: [normal[0] as f32, normal[1] as f32, normal[2] as f32],
+                color: [1.0, 1.0, 1.0],
+            });
+        }
+        indices.extend_from_slice(&[base_index, base_index + 1, base_index + 2]);
+    }
+
+    if vertices.is_empty() || indices.is_empty() {
+        None
+    } else {
+        Some((vertices, indices))
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SerializableTransform {
     translation: [f32; 3],
@@ -1017,6 +1457,7 @@ struct SerializableEntity {
     name: String,
     transform: SerializableTransform,
     velocity: [f32; 3],
+    mesh_path: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1071,6 +1512,7 @@ fn scene_to_serializable(scene: &Scene) -> SerializableScene {
                 scale: e.transform.scale.to_array(),
             },
             velocity: e.velocity.to_array(),
+            mesh_path: e.mesh_path.clone(),
         })
         .collect();
 
@@ -1105,6 +1547,7 @@ fn serializable_to_scene(data: &SerializableScene) -> Scene {
                 scale: Vec3::from_array(e.transform.scale),
             },
             velocity: Vec3::from_array(e.velocity),
+            mesh_path: e.mesh_path.clone(),
         })
         .collect();
 
